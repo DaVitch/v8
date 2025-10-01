@@ -1,0 +1,27 @@
+name: Sync Fork with Upstream
+
+on:
+  # 매일 00:00 KST (15:00 UTC)에 자동으로 실행
+  schedule:
+    - cron: '0 15 * * *'
+  
+  # GitHub Actions 탭에서 수동으로 직접 실행할 수도 있게 함
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Fork
+        uses: actions/checkout@v4
+        with:
+          # This token is necessary to push the synced changes back to the fork
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Sync with Upstream
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/v8/v8.git
+          git pull upstream main --ff-only
+          git push origin main
