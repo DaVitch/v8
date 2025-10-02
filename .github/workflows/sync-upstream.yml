@@ -1,9 +1,9 @@
 name: Sync Fork with Upstream
 
 on:
-  # 매일 13:00 KST에 자동으로 실행
+  # 매시간 자동으로 실행
   schedule:
-    - cron: '0 4 * * *'
+    - cron: '0 * * * *'
   
   # GitHub Actions 탭에서 수동으로 직접 실행할 수도 있게 함
   workflow_dispatch:
