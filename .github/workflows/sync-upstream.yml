@@ -23,5 +23,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/v8/v8.git
-          git pull upstream main --ff-only
+          git pull upstream main
           git push origin main
