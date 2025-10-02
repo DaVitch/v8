@@ -405,7 +405,7 @@ class WasmMemoryObject
   // Makes a new SharedArrayBuffer backed by the same backing store.
   static DirectHandle<JSArrayBuffer> RefreshSharedBuffer(
       Isolate* isolate, DirectHandle<WasmMemoryObject> memory,
-      ResizableFlag resizable_by_js);
+      DirectHandle<JSArrayBuffer> old_buffer, ResizableFlag resizable_by_js);
 
   V8_EXPORT_PRIVATE static int32_t Grow(Isolate*,
                                         DirectHandle<WasmMemoryObject>,
@@ -414,12 +414,14 @@ class WasmMemoryObject
   // Makes the ArrayBuffer fixed-length. Assumes the current ArrayBuffer is
   // resizable. Detaches the existing buffer if it is not shared.
   static DirectHandle<JSArrayBuffer> ToFixedLengthBuffer(
-      Isolate* isolate, DirectHandle<WasmMemoryObject> memory);
+      Isolate* isolate, DirectHandle<WasmMemoryObject> memory,
+      DirectHandle<JSArrayBuffer> old_buffer);
 
   // Makes the ArrayBuffer resizable by JS. Assumes the current ArrayBuffer is
   // fixed-length. Detaches the existing buffer if it is not shared.
   static DirectHandle<JSArrayBuffer> ToResizableBuffer(
-      Isolate* isolate, DirectHandle<WasmMemoryObject> memory);
+      Isolate* isolate, DirectHandle<WasmMemoryObject> memory,
+      DirectHandle<JSArrayBuffer> old_buffer);
 
   static constexpr int kNoMaximum = -1;
 
@@ -1005,7 +1007,7 @@ class WasmExportedFunction : public JSFunction {
       DirectHandle<WasmFuncRef> func_ref,
       DirectHandle<WasmInternalFunction> internal_function, int arity,
       DirectHandle<Code> export_wrapper, const wasm::WasmModule* module,
-      int func_index, const wasm::CanonicalSig* sig, wasm::Promise promise);
+      int func_index, wasm::Promise promise);
 
   static void MarkAsReceiverIsFirstParam(
       Isolate* isolate, DirectHandle<WasmExportedFunction> exported_function);
@@ -1048,6 +1050,7 @@ class WasmCapiFunction : public JSFunction {
                                             DirectHandle<Foreign> embedder_data,
                                             const wasm::CanonicalSig* sig);
 
+  // TODO(clemensb): Remove this accessor.
   const wasm::CanonicalSig* sig() const;
 
   // Checks whether the given {sig} has the same parameter types as the
@@ -1226,10 +1229,6 @@ class WasmJSFunctionData
 
   Tagged<JSReceiver> GetCallable() const;
   wasm::Suspend GetSuspend() const;
-  const wasm::CanonicalSig* GetSignature() const;
-  // Prefer to use this convenience wrapper of the Torque-generated
-  // {canonical_sig_index()}.
-  inline wasm::CanonicalTypeIndex sig_index() const;
   bool MatchesSignature(
       wasm::CanonicalTypeIndex other_canonical_sig_index) const;
 
