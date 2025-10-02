@@ -13,11 +13,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.PAT_TOKEN }}
+          fetch-depth: 0 # 전체 히스토리를 가져오도록 설정
 
       - name: Sync with Upstream
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/v8/v8.git
-          git pull upstream main --no-rebase  # Merge 전략을 명시적으로 사용
+          git pull upstream main --no-rebase
           git push origin main
