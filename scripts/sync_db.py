@@ -1,21 +1,18 @@
 import os
 import sys
 import subprocess
-import qdrant_client
-from qdrant_client.http import models
 from langchain.text_splitter import RecursiveCharacterTextSplitter, Language
+# 공식 문서에 따라 VectorSearchVectorStore를 가져옵니다.
 from langchain_google_vertexai import VertexAIEmbeddings
-from langchain_community.vectorstores import VertexAIVectorSearch
+from langchain_community.vectorstores import VectorSearchVectorStore
 from langchain.indexes import SQLRecordManager, index
 from langchain_core.documents import Document
 
 # --- 1. 환경 변수 확인 ---
+# ENDPOINT_ID를 다시 추가합니다.
 required_env_vars = [
-    "POSTGRES_CONNECTION_STRING",
-    "GCP_PROJECT_ID",
-    "VERTEX_AI_INDEX_ID",
-    "VERTEX_AI_ENDPOINT_ID",
-    "VERTEX_AI_REGION"
+    "POSTGRES_CONNECTION_STRING", "GCP_PROJECT_ID", "VERTEX_AI_INDEX_ID",
+    "VERTEX_AI_ENDPOINT_ID", "VERTEX_AI_REGION"
 ]
 missing_vars = [var for var in required_env_vars if not os.getenv(var)]
 if missing_vars:
@@ -29,18 +26,15 @@ INDEX_ID = os.getenv("VERTEX_AI_INDEX_ID")
 ENDPOINT_ID = os.getenv("VERTEX_AI_ENDPOINT_ID")
 REGION = os.getenv("VERTEX_AI_REGION")
 
-assert POSTGRES_CONNECTION_STRING is not None
-assert PROJECT_ID is not None 
-assert INDEX_ID is not None
-assert ENDPOINT_ID is not None
-assert REGION is not None
+assert POSTGRES_CONNECTION_STRING and PROJECT_ID and INDEX_ID and ENDPOINT_ID and REGION
 
 RECORD_MANAGER_NAMESPACE = f"vertexai/{INDEX_ID}"
 
 print("Initializing clients and managers...")
 embeddings = VertexAIEmbeddings(model_name="text-embedding-004")
 
-vectorstore = VertexAIVectorSearch.from_components(
+# Vertex AI Vector Search 초기화 (from_components 메서드를 사용하는 올바른 방식)
+vectorstore = VectorSearchVectorStore.from_components(
     project_id=PROJECT_ID,
     location=REGION,
     index_id=INDEX_ID,
@@ -48,12 +42,12 @@ vectorstore = VertexAIVectorSearch.from_components(
     embedding=embeddings,
 )
 
+# SQL Record Manager 초기화
 record_manager = SQLRecordManager(
     RECORD_MANAGER_NAMESPACE, db_url=POSTGRES_CONNECTION_STRING
 )
 record_manager.create_schema()
 print("Initialization complete.")
-
 
 # --- 3. 함수 정의 ---
 def get_changed_files():
@@ -130,3 +124,4 @@ if __name__ == "__main__":
         print("No deleted files to process.")
         
     print("Synchronization script finished successfully.")
+
