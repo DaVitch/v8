@@ -1,0 +1,42 @@
+name: Sync V8 Source Code to Vector DB
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'third_party/**'
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt # requirements.txt 파일을 사용하도록 수정
+
+      - name: Set up Google Cloud Credentials
+        uses: 'google-github-actions/auth@v2'
+        with:
+          credentials_json: '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}'
+
+      - name: Run sync script
+        env:
+          # Vertex AI 스크립트에 맞게 env 변수 수정
+          POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          VERTEX_AI_INDEX_ID: ${{ secrets.VERTEX_AI_INDEX_ID }}
+          VERTEX_AI_ENDPOINT_ID: ${{ secrets.VERTEX_AI_ENDPOINT_ID }}
+          VERTEX_AI_REGION: ${{ secrets.VERTEX_AI_REGION }}
+        run: python3 scripts/sync_db.py

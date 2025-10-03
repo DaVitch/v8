@@ -1,0 +1,8 @@
+langchain
+langchain-google-vertexai
+qdrant-client
+psycopg2-binary
+tiktoken
+SQLAlchemy
+langchain-community
+langchain-core
