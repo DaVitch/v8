@@ -1,8 +1,7 @@
-langchain
-langchain-google-vertexai
-qdrant-client
+langchain>=0.1.0
+langchain-google-vertexai>=1.0.0
 psycopg2-binary
-tiktoken
 SQLAlchemy
-langchain-community
-langchain-core
+langchain-community>=0.0.30
+langchain-core>=0.1.40
+tiktoken
