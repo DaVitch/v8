@@ -8,6 +8,7 @@ on:
     paths:
       - 'src/**'
       - 'include/**'
+      - 'test/**'
       - 'third_party/**'
 
 jobs:
@@ -25,7 +26,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt # requirements.txt 파일을 사용하도록 수정
+        run: pip install -r requirements.txt
 
       - name: Set up Google Cloud Credentials
         uses: 'google-github-actions/auth@v2'
@@ -33,8 +34,8 @@ jobs:
           credentials_json: '${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}'
 
       - name: Run sync script
+        # env 블록을 run 명령어 위로 이동하고 들여쓰기를 수정
         env:
-          # Vertex AI 스크립트에 맞게 env 변수 수정
           POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           VERTEX_AI_INDEX_ID: ${{ secrets.VERTEX_AI_INDEX_ID }}
