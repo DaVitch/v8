@@ -1,6 +1,7 @@
 name: Sync V8 Source Code to Vector DB
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
