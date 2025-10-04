@@ -31,7 +31,7 @@ assert POSTGRES_CONNECTION_STRING and PROJECT_ID and INDEX_ID and ENDPOINT_ID an
 RECORD_MANAGER_NAMESPACE = f"vertexai/{INDEX_ID}"
 
 print("Initializing clients and managers...")
-embeddings = VertexAIEmbeddings(model_name="text-embedding-004")
+embeddings = VertexAIEmbeddings(model_name="text-embedding-005")
 
 # Vertex AI Vector Search 초기화 (공식 문서에 맞는 from_components 메서드 사용)
 vectorstore = VectorSearchVectorStoreDatastore.from_components(
