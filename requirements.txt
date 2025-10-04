@@ -5,3 +5,4 @@ SQLAlchemy
 langchain-community>=0.0.30
 langchain-core>=0.1.40
 tiktoken
+google-cloud-datastore
