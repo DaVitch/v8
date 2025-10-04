@@ -2,12 +2,14 @@ import os
 import sys
 import subprocess
 from langchain.text_splitter import RecursiveCharacterTextSplitter, Language
-# VertexAIEmbeddings와 VertexAIVectorSearch를 모두 여기서 가져옵니다.
-from langchain_google_vertexai import VertexAIEmbeddings, VertexAIVectorSearch  # type: ignore
+# 최신 버전에 맞는 올바른 import 경로를 사용합니다.
+from langchain_google_vertexai import VertexAIEmbeddings
+from langchain_google_vertexai import VectorSearchVectorStoreDatastore
 from langchain.indexes import SQLRecordManager, index
 from langchain_core.documents import Document
 
 # --- 1. 환경 변수 확인 ---
+# from_components 메서드에 ENDPOINT_ID가 다시 필요합니다.
 required_env_vars = [
     "POSTGRES_CONNECTION_STRING", "GCP_PROJECT_ID", "VERTEX_AI_INDEX_ID",
     "VERTEX_AI_ENDPOINT_ID", "VERTEX_AI_REGION"
@@ -31,10 +33,10 @@ RECORD_MANAGER_NAMESPACE = f"vertexai/{INDEX_ID}"
 print("Initializing clients and managers...")
 embeddings = VertexAIEmbeddings(model_name="text-embedding-004")
 
-# Vertex AI Vector Search 초기화 (from_components 메서드를 사용하는 올바른 방식)
-vectorstore = VertexAIVectorSearch.from_components(
+# Vertex AI Vector Search 초기화 (공식 문서에 맞는 from_components 메서드 사용)
+vectorstore = VectorSearchVectorStoreDatastore.from_components(
     project_id=PROJECT_ID,
-    location=REGION,
+    region=REGION,
     index_id=INDEX_ID,
     endpoint_id=ENDPOINT_ID,
     embedding=embeddings,
@@ -122,4 +124,3 @@ if __name__ == "__main__":
         print("No deleted files to process.")
         
     print("Synchronization script finished successfully.")
-

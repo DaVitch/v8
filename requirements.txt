@@ -1,7 +1,7 @@
-langchain==0.2.1
-langchain-core==0.2.3
-langchain-community==0.2.1
-langchain-google-vertexai==1.0.4
+langchain>=0.1.0
+langchain-google-vertexai>=1.0.0
 psycopg2-binary
 SQLAlchemy
+langchain-community>=0.0.30
+langchain-core>=0.1.40
 tiktoken
