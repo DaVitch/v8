@@ -19,7 +19,7 @@ jobs:
     env:
       UPSTREAM_CLONE_URL: ${{ vars.UPSTREAM_CLONE_URL || 'https://github.com/v8/v8' }}
       TARGET_BRANCH: main
-      # 브랜치 보호로 강제푸시가 안되면 false로 바꾸고 사용(= fast-forward push only)
+      # 브랜치 보호로 강제푸시가 안되면 false로 바꾸고 사용(=fast-forward push only)
       ALLOW_FORCE_WITH_LEASE: "true"
 
     steps:
