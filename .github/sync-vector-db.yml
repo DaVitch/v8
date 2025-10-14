@@ -1,0 +1,126 @@
+name: Sync V8 Source Code to Vector DB
+
+on:
+  # 수동 실행
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        required: false
+        default: "incremental"
+        type: choice
+        options: ["full", "incremental"]
+      update_mode:
+        description: "Vector update method"
+        required: false
+        default: "stream"
+        type: choice
+        options: ["batch", "stream"]
+
+  # ⬇️ Upstream 워크플로우가 성공적으로 끝나면 자동 실행
+  workflow_run:
+    workflows: ["Sync Fork with Upstream"]
+    types: [completed]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: sync-vector-db-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    # Upstream 트리거일 때는 성공/브랜치=main 인 경우에만 실행
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    env:
+      # == GCP / Vertex ==
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      VERTEX_AI_REGION: ${{ secrets.VERTEX_AI_REGION }}
+      VERTEX_AI_INDEX_ID: ${{ secrets.VERTEX_AI_INDEX_ID }}
+      VERTEX_AI_ENDPOINT_ID: ${{ secrets.VERTEX_AI_ENDPOINT_ID }}
+      VERTEX_AI_GCS_BUCKET: ${{ secrets.VERTEX_AI_GCS_BUCKET }}
+      POSTGRES_CONNECTION_STRING: ${{ secrets.POSTGRES_CONNECTION_STRING }}
+      GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      # ==== Script behavior ====
+      VECTOR_UPDATE_MODE: ${{ (github.event.inputs.update_mode == 'batch' && 'batch') || 'stream' }}
+      REPO_ROOT: ${{ github.workspace }}
+      SOURCE_ID: v8-repo
+
+      # ==== Chunking / splitter ====
+      CHUNK_SIZE: "900"
+      CHUNK_OVERLAP: "120"
+      SAFE_STORE_LIMIT: "1400"
+
+      # ==== Diff guard ====
+      DIFF_MIN_FILES_FOR_INCREMENTAL: "100"
+
+      # ==== Streaming throttle ====
+      STREAM_BYTES_BUDGET_PER_MIN: "12000"   # 여유 있게 12MB
+      STREAM_BATCHES_PER_MIN: "20"
+      STREAM_UPSERT_BATCH: "140"
+      SLEEP_BETWEEN_BATCH: "1.0"
+
+      # ==== Embedding throttles ====
+      EMB_API_BATCH_SIZE: "8"
+      EMB_MAX_TOKENS_PER_REQ: "18000"
+      EMB_SAFETY_MARGIN_TOKENS: "1500"
+      EMB_PER_DOC_MAX_TOKENS: "1500"
+      EMB_WORKERS: "4"
+
+    steps:
+      - name: Checkout repository (history + submodules)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Auth to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Run sync script (FULL or INCREMENTAL)
+        env:
+          RUN_MODE: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode) || 'incremental' }}
+        run: |
+          echo "RUN_MODE=${RUN_MODE}"
+          echo "VECTOR_UPDATE_MODE=${VECTOR_UPDATE_MODE}"
+          echo "REPO_ROOT=${REPO_ROOT}"
+          git rev-parse --short HEAD
+
+          if [ "${RUN_MODE}" = "full" ]; then
+            export FORCE_FULL_SCAN=1
+            export DIFF_BEFORE=
+            export DIFF_AFTER=
+            python scripts/sync_db.py --full
+          else
+            # 증분: 변경 없으면 즉시 종료(스크립트가 알아서 처리)
+            python scripts/sync_db.py
+          fi
+          

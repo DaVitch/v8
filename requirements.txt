@@ -1,0 +1,19 @@
+# LangChain
+langchain>=0.1.17
+langchain-core>=0.1.40
+langchain-community>=0.0.30
+langchain-google-vertexai>=1.0.0
+
+# Google / Vertex AI
+google-cloud-aiplatform>=1.66.0
+google-api-core>=2.17.0
+google-auth>=2.23.0
+grpcio>=1.62.0
+protobuf>=4.25.3
+
+# Vector record manager (Postgres)
+SQLAlchemy>=2.0.0
+psycopg2-binary
+
+# Tokenizer (선택이지만 유용)
+tiktoken
