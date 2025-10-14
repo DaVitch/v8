@@ -2,7 +2,7 @@ name: Sync Fork with Upstream
 
 on:
   schedule:
-    - cron: "0 * * * *"   # 매시간
+    - cron: "0 */3 * * *"   # 3시간마다
   workflow_dispatch:
 
 permissions:
@@ -19,7 +19,6 @@ jobs:
     env:
       UPSTREAM_CLONE_URL: ${{ vars.UPSTREAM_CLONE_URL || 'https://github.com/v8/v8' }}
       TARGET_BRANCH: main
-      # 브랜치 보호로 강제푸시가 안되면 false로 바꾸고 사용(=fast-forward push only) =
       ALLOW_FORCE_WITH_LEASE: "true"
 
     steps:
@@ -41,7 +40,9 @@ jobs:
           else
             git remote add upstream "${UPSTREAM_CLONE_URL}"
           fi
+          # Ensure we fetch both the latest upstream and origin branches
           git fetch --tags --force upstream ${{ env.TARGET_BRANCH }}
+          git fetch origin ${{ env.TARGET_BRANCH }} --prune
 
       - name: Fast-forward or rebase onto upstream
         id: merge
@@ -106,5 +107,3 @@ jobs:
       - name: Summary
         run: |
           echo "Upstream changed: ${{ steps.merge.outputs.changed }}"
-          
-          
