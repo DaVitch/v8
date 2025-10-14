@@ -45,10 +45,9 @@ jobs:
         id: merge
         run: |
           set -e
-          # Try fast-forward first
           BEFORE=$(git rev-parse HEAD)
 
-          # 먼저 ff-only 시도
+          # 패스트 포워드 시도
           if ! git merge --ff-only upstream/${{ env.TARGET_BRANCH }}; then
             echo "[info] ff-only 실패 → rebase onto upstream"
             git rebase upstream/${{ env.TARGET_BRANCH }}
@@ -63,44 +62,14 @@ jobs:
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Sync with origin/main (resolve remote-ahead)
+      - name: Resolve conflicts and continue rebase
         if: steps.merge.outputs.changed == 'true'
-        shell: bash
         run: |
           set -e
-          # 원격 포크의 최신 상태를 다시 받아와서 리베이스 → push race 방지
-          git fetch origin ${{ env.TARGET_BRANCH }} --prune
-          # 로컬 변경을 origin/main 위로 이동 (충돌 나면 워크플로우가 실패)
-          if git rev-parse --verify origin/${{ env.TARGET_BRANCH }} >/dev/null 2>&1; then
-            git rebase origin/${{ env.TARGET_BRANCH }}
-          fi
+          # 충돌 발생 시 자동으로 rebase --skip 실행
+          git rebase --continue || git rebase --skip
 
-      - name: Push (with lease & retry)
+      - name: Push changes to fork
         if: steps.merge.outputs.changed == 'true'
-        shell: bash
         run: |
-          set -e
-          echo "[push] strategy: $ALLOW_FORCE_WITH_LEASE"
-          # 레이스 컨디션 완화 재시도(최대 3회)
-          for i in 1 2 3; do
-            git fetch origin ${{ env.TARGET_BRANCH }} --prune
-            if [ "${ALLOW_FORCE_WITH_LEASE}" = "true" ]; then
-              if git push --force-with-lease origin HEAD:${{ env.TARGET_BRANCH }}; then
-                echo "[push] force-with-lease success"; exit 0
-              fi
-            else
-              if git merge --ff-only origin/${{ env.TARGET_BRANCH }} 2>/dev/null || true; then
-                if git push origin HEAD:${{ env.TARGET_BRANCH }}; then
-                  echo "[push] fast-forward push success"; exit 0
-                fi
-              fi
-            fi
-            echo "[push] retry $i/3 after short sleep."
-            sleep 3
-          done
-          echo "::error::Push failed after retries."
-          exit 1
-
-      - name: Summary
-        run: |
-          echo "Upstream changed: ${{ steps.merge.outputs.changed }}"
+          git push origin ${{ env.TARGET_BRANCH }} --force  # 강제 푸시
