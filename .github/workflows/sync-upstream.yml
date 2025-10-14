@@ -2,7 +2,7 @@ name: Sync Fork with Upstream
 
 on:
   schedule:
-    - cron: "0 * * * *"   # Runs every hour
+    - cron: "0 */4 * * *"   # 4시간마다 실행
   workflow_dispatch:
 
 permissions:
@@ -19,13 +19,13 @@ jobs:
     env:
       UPSTREAM_CLONE_URL: ${{ vars.UPSTREAM_CLONE_URL || 'https://github.com/v8/v8' }}
       TARGET_BRANCH: main
-      ALLOW_FORCE_WITH_LEASE: "true"  # Allow forced push if necessary
+      ALLOW_FORCE_WITH_LEASE: "true"  # 강제 푸시 허용
 
     steps:
       - name: Checkout current repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Fetches all history
+          fetch-depth: 0  # 모든 커밋 기록을 가져옴
           ref: ${{ env.TARGET_BRANCH }}
 
       - name: Configure git user
@@ -48,8 +48,9 @@ jobs:
           # Try fast-forward first
           BEFORE=$(git rev-parse HEAD)
 
+          # 먼저 ff-only 시도
           if ! git merge --ff-only upstream/${{ env.TARGET_BRANCH }}; then
-            echo "[info] ff-only failed, attempting rebase."
+            echo "[info] ff-only 실패 → rebase onto upstream"
             git rebase upstream/${{ env.TARGET_BRANCH }}
           fi
 
@@ -62,8 +63,44 @@ jobs:
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Push changes to fork
+      - name: Sync with origin/main (resolve remote-ahead)
         if: steps.merge.outputs.changed == 'true'
+        shell: bash
         run: |
-          git push origin ${{ env.TARGET_BRANCH }}
+          set -e
+          # 원격 포크의 최신 상태를 다시 받아와서 리베이스 → push race 방지
+          git fetch origin ${{ env.TARGET_BRANCH }} --prune
+          # 로컬 변경을 origin/main 위로 이동 (충돌 나면 워크플로우가 실패)
+          if git rev-parse --verify origin/${{ env.TARGET_BRANCH }} >/dev/null 2>&1; then
+            git rebase origin/${{ env.TARGET_BRANCH }}
+          fi
 
+      - name: Push (with lease & retry)
+        if: steps.merge.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -e
+          echo "[push] strategy: $ALLOW_FORCE_WITH_LEASE"
+          # 레이스 컨디션 완화 재시도(최대 3회)
+          for i in 1 2 3; do
+            git fetch origin ${{ env.TARGET_BRANCH }} --prune
+            if [ "${ALLOW_FORCE_WITH_LEASE}" = "true" ]; then
+              if git push --force-with-lease origin HEAD:${{ env.TARGET_BRANCH }}; then
+                echo "[push] force-with-lease success"; exit 0
+              fi
+            else
+              if git merge --ff-only origin/${{ env.TARGET_BRANCH }} 2>/dev/null || true; then
+                if git push origin HEAD:${{ env.TARGET_BRANCH }}; then
+                  echo "[push] fast-forward push success"; exit 0
+                fi
+              fi
+            fi
+            echo "[push] retry $i/3 after short sleep."
+            sleep 3
+          done
+          echo "::error::Push failed after retries."
+          exit 1
+
+      - name: Summary
+        run: |
+          echo "Upstream changed: ${{ steps.merge.outputs.changed }}"
