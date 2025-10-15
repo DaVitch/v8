@@ -25,7 +25,7 @@ jobs:
       - name: Checkout current repo
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 모든 커밋 기록을 가져옴 --
+          fetch-depth: 0  # 모든 커밋 기록을 가져옴 
           ref: ${{ env.TARGET_BRANCH }}
 
       - name: Configure git user
