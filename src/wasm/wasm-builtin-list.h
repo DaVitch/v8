@@ -49,7 +49,6 @@ namespace v8::internal::wasm {
   V(WasmTableSetFuncRef)                                                       \
   V(WasmFunctionTableGet)                                                      \
   V(WasmStackGuard)                                                            \
-  V(WasmStackGuardLoop)                                                        \
   V(WasmGrowableStackGuard)                                                    \
   V(WasmStackOverflow)                                                         \
   V(WasmAllocateFixedArray)                                                    \
@@ -152,6 +151,7 @@ namespace v8::internal::wasm {
   V(DebugPrintObject)                                                          \
   V(WasmFastApiCallTypeCheckAndUpdateIC)                                       \
   V(WasmFXResume)                                                              \
+  V(WasmFXSuspend)                                                             \
   V(DeoptimizationEntry_Eager)                                                 \
   V(WasmLiftoffDeoptFinish)                                                    \
   V(WasmPropagateException)                                                    \
