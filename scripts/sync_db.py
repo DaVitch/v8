@@ -30,7 +30,9 @@ except ImportError:
         VectorSearchVectorStore as VSStore,
     )
 
-from langchain.indexes import SQLRecordManager, index
+# 지연 임포트 대상이므로 여기선 불러오지 않음:
+# from langchain.indexes import SQLRecordManager, index
+# from langchain_core.documents import Document
 from langchain_core.documents import Document
 
 from google.cloud import aiplatform
@@ -39,7 +41,7 @@ from google.cloud.aiplatform_v1.types import IndexDatapoint, UpsertDatapointsReq
 import google.auth
 
 # =========================== ENV ===========================
-POSTGRES_CONNECTION_STRING = os.environ["POSTGRES_CONNECTION_STRING"]
+POSTGRES_CONNECTION_STRING = os.environ.get("POSTGRES_CONNECTION_STRING")  # 배치에서만 필요
 PROJECT_ID = os.environ["GCP_PROJECT_ID"]
 INDEX_ID = os.environ["VERTEX_AI_INDEX_ID"]
 ENDPOINT_ID = os.environ["VERTEX_AI_ENDPOINT_ID"]
@@ -52,22 +54,21 @@ USE_STREAM = os.getenv("VECTOR_UPDATE_MODE", "").lower() in ("stream", "streamin
 SAFE_STORE_LIMIT = int(os.getenv("SAFE_STORE_LIMIT", "1400"))
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "900"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "120"))
-# 변경 파일 수가 이 값 미만이어도 이제 풀스캔하지 않음(그냥 증분)
 DIFF_MIN_FILES_FOR_INCREMENTAL = int(os.getenv("DIFF_MIN_FILES_FOR_INCREMENTAL", "5"))
 RECORD_MANAGER_NAMESPACE = os.getenv("RECORD_NAMESPACE", f"vertexai/{INDEX_ID}")
 
-# ---- Stream throttles (12MB 제한 대비 여유치로 11.5MB) ----
+# ---- Stream throttles ----
 STREAM_BYTES_BUDGET_PER_MIN_KB = int(os.getenv("STREAM_BYTES_BUDGET_PER_MIN", "11500"))
 STREAM_BATCHES_PER_MIN = int(os.getenv("STREAM_BATCHES_PER_MIN", "20"))
-STREAM_UPSERT_BATCH = int(os.getenv("STREAM_UPSERT_BATCH", "160"))  # 속도 ↑
+STREAM_UPSERT_BATCH = int(os.getenv("STREAM_UPSERT_BATCH", "160"))
 SLEEP_BETWEEN_BATCH = float(os.getenv("SLEEP_BETWEEN_BATCH", "1.0"))
 
 # ---- Embedding throttles & token guard ----
-EMB_API_BATCH_SIZE = int(os.getenv("EMB_API_BATCH_SIZE", "8"))     # 속도 ↑
+EMB_API_BATCH_SIZE = int(os.getenv("EMB_API_BATCH_SIZE", "8"))
 EMB_MAX_TOKENS_PER_REQ = int(os.getenv("EMB_MAX_TOKENS_PER_REQ", "18000"))
 EMB_SAFETY_MARGIN_TOKENS = int(os.getenv("EMB_SAFETY_MARGIN_TOKENS", "1500"))
-EMB_PER_DOC_MAX_TOKENS = int(os.getenv("EMB_PER_DOC_MAX_TOKENS", "1200"))  # 속도 ↑
-EMB_WORKERS = int(os.getenv("EMB_WORKERS", "6"))                   # 속도 ↑
+EMB_PER_DOC_MAX_TOKENS = int(os.getenv("EMB_PER_DOC_MAX_TOKENS", "1200"))
+EMB_WORKERS = int(os.getenv("EMB_WORKERS", "6"))
 
 # ---- Retry/backoff ----
 EMB_RETRY_MAX = int(os.getenv("EMB_RETRY_MAX", "6"))
@@ -107,7 +108,6 @@ if not USE_STREAM:
         sys.exit(1)
     print(f"[env] Using GCS staging bucket: {GCS_BUCKET}")
 
-    # VSStore.from_components의 버전별 파라미터명을 런타임에서 확인해 맞춰 넣음
     sig = inspect.signature(VSStore.from_components)
     params = sig.parameters
     bucket_kwargs: Dict[str, Any] = {}
@@ -132,8 +132,7 @@ if not USE_STREAM:
         **bucket_kwargs,
     )
 
-record_manager = SQLRecordManager(RECORD_MANAGER_NAMESPACE, db_url=POSTGRES_CONNECTION_STRING)
-record_manager.create_schema()
+# record_manager는 배치 모드에서만 필요하므로 여기서 만들지 않음
 print("Initialization complete.")
 
 # ===================== DIFF / LOAD =====================
@@ -184,7 +183,7 @@ def get_changed_files(force_full: bool) -> Dict[str, List[str]]:
     files = {"added_modified": [], "deleted": []}
     if not out.strip():
         print(f"[diff] no changes (tried: {', '.join(tried)}) → EXIT")
-        return files  # ★ 변경사항 없음 → 그대로 종료
+        return files
 
     for line in out.strip().split("\n"):
         if not line:
@@ -200,7 +199,6 @@ def get_changed_files(force_full: bool) -> Dict[str, List[str]]:
         elif status.startswith("D"):
             files["deleted"].append(file_path)
 
-    # ★ 변경 파일이 적더라도 풀스캔 강제 금지
     print(
         f"Found files: {len(files['added_modified'])} added/modified, "
         f"{len(files['deleted'])} deleted"
@@ -241,6 +239,11 @@ def trim_to_safe_bytes(text: str, byte_limit: int = SAFE_STORE_LIMIT) -> str:
             data = data[:-1]
 
 # ================= EMBEDDING (token-guard + backoff) =================
+def estimate_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return max(1, int(len(text) / 3.6))
+
 def _truncate_by_tokens(s: str, max_toks: int) -> str:
     if estimate_tokens(s) <= max_toks:
         return s
@@ -420,7 +423,6 @@ if __name__ == "__main__":
 
     if USE_STREAM:
         if deleted:
-            # 스트림 즉시 삭제는 로컬 manifest 없으면 불가 → 경고만
             show = min(20, len(deleted))
             for f in deleted[:show]:
                 print(f"[warn][stream] delete '{f}' skipped (no manifest for datapoint ids)")
@@ -431,6 +433,25 @@ if __name__ == "__main__":
         else:
             print("No new/modified docs to upsert.")
     else:
+        # ——— 배치 모드에서만 지연 임포트 ———
+        try:
+            try:
+                from langchain.indexes import SQLRecordManager, index
+            except Exception:
+                from langchain_community.indexes import SQLRecordManager, index
+        except Exception:
+            print("[fatal] batch 모드에 필요한 'SQLRecordManager/index' 모듈을 찾지 못했습니다.")
+            print("        옵션1) requirements에 langchain(>=0.2) + langchain-community(>=0.2) 추가")
+            print("        옵션2) langchain==0.1.20, langchain-google-vertexai==1.*로 핀")
+            sys.exit(1)
+
+        if not POSTGRES_CONNECTION_STRING:
+            print("[fatal] batch 모드에는 POSTGRES_CONNECTION_STRING이 필요합니다.")
+            sys.exit(1)
+
+        record_manager = SQLRecordManager(RECORD_MANAGER_NAMESPACE, db_url=POSTGRES_CONNECTION_STRING)
+        record_manager.create_schema()
+
         kwargs = {"record_manager": record_manager, "cleanup": "incremental"}
         sig = inspect.signature(index).parameters
         if "vectorstore" in sig: kwargs["vectorstore"] = vectorstore
