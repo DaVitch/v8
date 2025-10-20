@@ -12,11 +12,24 @@ import subprocess
 from typing import Any, Dict, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from langchain.text_splitter import RecursiveCharacterTextSplitter, Language
-from langchain_google_vertexai import (
-    VertexAIEmbeddings,
-    VectorSearchVectorStoreDatastore,
-)
+# --- LangChain text splitters: new (>=0.2) then fallback (0.1.x) ---
+try:
+    from langchain_text_splitters import RecursiveCharacterTextSplitter, Language
+except ImportError:
+    from langchain.text_splitter import RecursiveCharacterTextSplitter, Language
+
+# --- LangChain Vertex AI vector store: prefer Datastore, fallback to VectorStore ---
+try:
+    from langchain_google_vertexai import (
+        VertexAIEmbeddings,
+        VectorSearchVectorStoreDatastore as VSStore,
+    )
+except ImportError:
+    from langchain_google_vertexai import (
+        VertexAIEmbeddings,
+        VectorSearchVectorStore as VSStore,
+    )
+
 from langchain.indexes import SQLRecordManager, index
 from langchain_core.documents import Document
 
@@ -93,7 +106,9 @@ if not USE_STREAM:
         print("[fatal] batch 모드인데 staging bucket이 지정되지 않았습니다.")
         sys.exit(1)
     print(f"[env] Using GCS staging bucket: {GCS_BUCKET}")
-    sig = inspect.signature(VectorSearchVectorStoreDatastore.from_components)
+
+    # VSStore.from_components의 버전별 파라미터명을 런타임에서 확인해 맞춰 넣음
+    sig = inspect.signature(VSStore.from_components)
     params = sig.parameters
     bucket_kwargs: Dict[str, Any] = {}
     if "staging_bucket_name" in params:
@@ -108,7 +123,7 @@ if not USE_STREAM:
         print("[fatal] No compatible staging-bucket parameter.")
         sys.exit(1)
 
-    vectorstore = VectorSearchVectorStoreDatastore.from_components(
+    vectorstore = VSStore.from_components(
         project_id=PROJECT_ID,
         region=REGION,
         index_id=INDEX_ID,
