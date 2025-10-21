@@ -156,7 +156,7 @@ Handle<ScopeInfo> ScopeInfo::Create(IsolateT* isolate, Zone* zone, Scope* scope,
 
   const bool allocates_arguments =
       scope->is_function_scope() &&
-      scope->AsDeclarationScope()->arguments() == nullptr;
+      scope->AsDeclarationScope()->arguments() != nullptr;
   // TODO(cbruni): Don't always waste a field for the inferred name.
   const bool has_inferred_function_name = scope->is_function_scope();
 
@@ -583,7 +583,9 @@ DirectHandle<ScopeInfo> ScopeInfo::CreateForBootstrapping(
                                              : VariableAllocationInfo::UNUSED) |
       ClassScopeHasPrivateBrandBit::encode(false) |
       HasSavedClassVariableBit::encode(false) |
-      AllocatesArgumentsBit::encode(type == BootstrappingType::kFunction) |
+      // We don't know the value of this flag, so set defensively.
+      AllocatesArgumentsBit::encode(type == BootstrappingType::kFunction &&
+                                    !is_empty_function) |
       FunctionVariableBits::encode(is_empty_function
                                        ? VariableAllocationInfo::UNUSED
                                        : VariableAllocationInfo::NONE) |
@@ -810,9 +812,28 @@ bool ScopeInfo::HasSavedClassVariable() const {
   return HasSavedClassVariableBit::decode(Flags());
 }
 
-bool ScopeInfo::CannotAccessVariableArguments() const {
-  return is_strict(this->language_mode()) && HasSimpleParameters() &&
-         !AllocatesArgumentsBit::decode(Flags());
+bool ScopeInfo::IsSloppyNormalJSFunction() const {
+  return function_kind() == FunctionKind::kNormalFunction &&
+         is_sloppy(language_mode());
+}
+
+bool ScopeInfo::CanOnlyAccessFixedFormalParameters() const {
+  FunctionKind function_kind = this->function_kind();
+  return
+      // Filter out builtins.
+      !IsEmpty() &&
+      // Can't be a SloppyNormalJSFunction.
+      !IsSloppyNormalJSFunction() &&
+      // TODO(dcarney): Make this function kind filter exact. It's currently
+      //                fine if it's not as this results in conservation
+      //                optimizations.
+      (function_kind == FunctionKind::kNormalFunction ||
+       function_kind == FunctionKind::kArrowFunction) &&
+      // Can't have arguments allocated in the frame for any reason since this
+      // indicates potential reachability.
+      !AllocatesArgumentsBit::decode(Flags()) &&
+      // Can't have rest parameters.
+      HasSimpleParameters();
 }
 
 bool ScopeInfo::HasFunctionName() const {

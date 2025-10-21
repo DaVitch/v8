@@ -3510,8 +3510,8 @@ void ScopeInfo::ScopeInfoPrint(std::ostream& os) {
   }
   if (ClassScopeHasPrivateBrand()) os << "\n - class scope has private brand";
   if (HasSavedClassVariable()) os << "\n - has saved class variable";
-  if (CannotAccessVariableArguments())
-    os << "\n - cannot access variable arguments";
+  if (CanOnlyAccessFixedFormalParameters())
+    os << "\n - can only access fixed formal parameters";
   if (HasFunctionName()) {
     os << "\n - function name(" << FunctionVariableBits::decode(flags) << "): ";
     ShortPrint(FunctionName(), os);

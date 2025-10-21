@@ -102,9 +102,11 @@ class ScopeInfo : public TorqueGeneratedScopeInfo<ScopeInfo, HeapObject> {
   // static private methods?
   bool HasSavedClassVariable() const;
 
+  bool IsSloppyNormalJSFunction() const;
+
   // This (function) scope cannot access rest parameters or the arguments
-  // exotic object
-  bool CannotAccessVariableArguments() const;
+  // exotic object.
+  V8_EXPORT_PRIVATE bool CanOnlyAccessFixedFormalParameters() const;
 
   // Is this scope the scope of a named function expression?
   V8_EXPORT_PRIVATE bool HasFunctionName() const;

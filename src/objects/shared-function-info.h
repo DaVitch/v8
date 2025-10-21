@@ -389,7 +389,8 @@ class SharedFunctionInfo
   inline uint16_t internal_formal_parameter_count_with_receiver() const;
   inline uint16_t internal_formal_parameter_count_without_receiver() const;
 
-  inline bool CannotAccessVariableArguments() const;
+  inline bool CanOnlyAccessFixedFormalParameters() const;
+  inline bool IsSloppyNormalJSFunction() const;
 
  private:
   using TorqueGeneratedSharedFunctionInfo::formal_parameter_count;

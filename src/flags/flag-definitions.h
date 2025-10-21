@@ -530,6 +530,16 @@ DEFINE_BOOL(scavenger_promote_quarantined_pages, true,
             "Quarantined pages in the intermediate generation will be promoted "
             "to old space")
 
+DEFINE_BOOL(scavenger_chaos_mode, false,
+            "Scavenger will ignore age when making promotion decisions and "
+            "instead choose objects to be promoted at random. This only "
+            "applies to non-large objects.")
+DEFINE_UINT(
+    scavenger_chaos_mode_threshold, 50,
+    "Percentage of non-large young objects that will be promoted during "
+    "Scavenger in chaos mode")
+DEFINE_REQUIREMENT(v8_flags.scavenger_chaos_mode_threshold <= 100)
+
 #ifdef V8_ENABLE_LOCAL_OFF_STACK_CHECK
 #define V8_ENABLE_LOCAL_OFF_STACK_CHECK_BOOL true
 #else
@@ -942,8 +952,8 @@ DEFINE_BOOL(trace_compilation_dependencies, false, "trace code dependencies")
 DEFINE_IMPLICATION(trace_compilation_dependencies, trace_deopt_verbose)
 
 #if defined(V8_ENABLE_WEBASSEMBLY) && V8_STATIC_ROOTS_BOOL
-DEFINE_EXPERIMENTAL_FEATURE(unmap_holes, "unmap the page containing the holes.")
-DEFINE_IMPLICATION(experimental_fuzzing, unmap_holes)
+DEFINE_BOOL(unmap_holes, false, "unmap the page containing the holes.")
+DEFINE_IMPLICATION(fuzzing, unmap_holes)
 DEFINE_EXPERIMENTAL_FEATURE(assert_hole_checked_by_value,
                             "assert that we always check for holes by value, "
                             "never dereferencing their map.")
@@ -1054,7 +1064,7 @@ DEFINE_INT(invocation_count_for_turbofan, 3000,
 DEFINE_INT(invocation_count_for_osr, 500, "invocation count required for OSR")
 DEFINE_INT(osr_to_tierup, 1,
            "number to decrease the invocation budget by when we follow OSR")
-DEFINE_INT(minimum_invocations_after_ic_update, 150,
+DEFINE_INT(minimum_invocations_after_ic_update, 500,
            "How long to minimally wait after IC update before tier up")
 DEFINE_INT(minimum_invocations_before_optimization, 2,
            "Minimum number of invocations we need before non-OSR optimization")
@@ -2313,7 +2323,7 @@ DEFINE_BOOL(incremental_marking, true, "use incremental marking")
 DEFINE_BOOL(incremental_marking_task, true, "use tasks for incremental marking")
 DEFINE_BOOL(incremental_marking_start_user_visible, true,
             "Starts incremental marking with kUserVisible priority.")
-DEFINE_BOOL(incremental_marking_always_user_visible, false,
+DEFINE_BOOL(incremental_marking_always_user_visible, true,
             "Always posts incremental marking with kUserVisible priority.")
 DEFINE_INT(incremental_marking_soft_trigger, 0,
            "threshold for starting incremental marking via a task in percent "
@@ -3055,8 +3065,6 @@ DEFINE_BOOL(adjust_os_scheduling_parameters, true,
             "adjust OS specific scheduling params for the isolate")
 DEFINE_BOOL(experimental_flush_embedded_blob_icache, true,
             "Used in an experiment to evaluate icache flushing on certain CPUs")
-DEFINE_BOOL(allow_allocation_in_fast_api_call, true,
-            "Allow allocations in fast API calls.")
 
 // Flags for short builtin calls feature
 #if V8_SHORT_BUILTIN_CALLS

@@ -2598,7 +2598,7 @@ MaybeHandle<Object> JsonParser<Char>::Parse(
   if (IsJSFunction(*reviver)) {
     Handle<SharedFunctionInfo> reviver_sfi(Cast<JSFunction>(*reviver)->shared(),
                                            isolate);
-    if (reviver_sfi->CannotAccessVariableArguments() &&
+    if (reviver_sfi->CanOnlyAccessFixedFormalParameters() &&
         reviver_sfi->internal_formal_parameter_count_without_receiver() < 3) {
       // The reviver function has only one or two arguments, so we don't need
       // to collect the information on the source for each primitive value.

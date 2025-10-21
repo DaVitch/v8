@@ -3909,7 +3909,18 @@ struct WasmStackCheckOp : FixedArityOperationT<0, WasmStackCheckOp> {
   using Kind = JSStackCheckOp::Kind;
   Kind kind;
 
-  static constexpr OpEffects effects = OpEffects().CanCallAnything();
+  OpEffects Effects() const {
+    switch (kind) {
+      case Kind::kLoop:
+        return OpEffects().RequiredWhenUnused().CanReadMemory().CanAllocate();
+      case Kind::kFunctionEntry:
+        // For function entry stack checks, we could model their side effects
+        // somewhat more accurately, but it probably doesn't matter.
+        return OpEffects().CanCallAnything();
+      case Kind::kBuiltinEntry:
+        UNREACHABLE();
+    }
+  }
 
   explicit WasmStackCheckOp(Kind kind) : Base(), kind(kind) {}
 
@@ -3919,7 +3930,6 @@ struct WasmStackCheckOp : FixedArityOperationT<0, WasmStackCheckOp> {
       ZoneVector<MaybeRegisterRepresentation>& storage) const {
     return {};
   }
-
 
   auto options() const { return std::tuple{kind}; }
 };
@@ -4268,7 +4278,7 @@ struct CheckExceptionOp : FixedArityOperationT<1, CheckExceptionOp> {
   // A CheckExceptionOp is inserted if the operation must handle either
   // exceptions, effects, or both. So users of this op must handle the case
   // where {catch_block} is null or {effect_handler} is empty.
-  std::optional<EffectHandler> effect_handler;
+  base::Vector<EffectHandler> effect_handlers;
 
   static constexpr OpEffects effects = OpEffects().CanCallAnything();
   base::Vector<const RegisterRepresentation> outputs_rep() const { return {}; }
@@ -4282,19 +4292,17 @@ struct CheckExceptionOp : FixedArityOperationT<1, CheckExceptionOp> {
 
   CheckExceptionOp(V<Any> throwing_operation, Block* successor,
                    Block* catch_block,
-                   std::optional<EffectHandler> effect_handler = {})
+                   base::Vector<EffectHandler> effect_handlers = {})
       : Base(throwing_operation),
         didnt_throw_block(successor),
         catch_block(catch_block),
-        effect_handler(effect_handler) {}
+        effect_handlers(effect_handlers) {}
 
   V8_EXPORT_PRIVATE void Validate(const Graph& graph) const;
 
   size_t hash_value(HashingStrategy strategy = HashingStrategy::kDefault) const;
   auto options() const {
-    return std::tuple{
-        didnt_throw_block, catch_block,
-        effect_handler.has_value() ? effect_handler->block : nullptr};
+    return std::tuple{didnt_throw_block, catch_block, effect_handlers};
   }
 };
 
@@ -4609,8 +4617,8 @@ inline base::SmallVector<Block*, 4> SuccessorBlocks(const Operation& op) {
       if (casted.catch_block) {
         res.push_back(casted.catch_block);
       }
-      if (casted.effect_handler.has_value()) {
-        res.push_back(casted.effect_handler->block);
+      for (auto& effect_handler : casted.effect_handlers) {
+        res.push_back(effect_handler.block);
       }
       return res;
     }
@@ -9708,7 +9716,7 @@ constexpr size_t input_count(const base::Flags<T>) {
 }
 constexpr size_t input_count(const Block*) { return 0; }
 constexpr size_t input_count(const TSCallDescriptor*) { return 0; }
-constexpr size_t input_count(std::optional<EffectHandler>) { return 0; }
+constexpr size_t input_count(base::Vector<EffectHandler>) { return 0; }
 constexpr size_t input_count(const char*) { return 0; }
 constexpr size_t input_count(const DeoptimizeParameters*) { return 0; }
 constexpr size_t input_count(const FastApiCallParameters*) { return 0; }

@@ -233,8 +233,14 @@ uint16_t SharedFunctionInfo::internal_formal_parameter_count_with_receiver()
   return param_count;
 }
 
-bool SharedFunctionInfo::CannotAccessVariableArguments() const {
-  return scope_info(kAcquireLoad)->CannotAccessVariableArguments();
+bool SharedFunctionInfo::IsSloppyNormalJSFunction() const {
+  // TODO(dcarney): Fix the empty scope and push this down into
+  //                ScopeInfo::IsSloppyNormalJSFunction.
+  return kind() == FunctionKind::kNormalFunction && is_sloppy(language_mode());
+}
+
+bool SharedFunctionInfo::CanOnlyAccessFixedFormalParameters() const {
+  return scope_info(kAcquireLoad)->CanOnlyAccessFixedFormalParameters();
 }
 
 uint16_t SharedFunctionInfo::internal_formal_parameter_count_without_receiver()
