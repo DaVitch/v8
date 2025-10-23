@@ -1038,23 +1038,24 @@ ProcessResult MaglevGraphOptimizer::VisitLoadTaggedField(
       return ReplaceWith(reducer_.GetConstant(input->feedback_cell()));
     }
   }
+  if (node->is_const() && !node->property_key().is_none()) {
+    if (ValueNode* cache = known_node_aspects().TryFindLoadedConstantProperty(
+            node->object_input().node(), node->property_key())) {
+      return ReplaceWith(cache);
+    }
+  }
+  // TODO(victorgomes): Implement it for non-const loads.
   return ProcessResult::kContinue;
 }
 
-ProcessResult MaglevGraphOptimizer::VisitLoadTaggedFieldForProperty(
-    LoadTaggedFieldForProperty* node, const ProcessingState& state) {
+ProcessResult MaglevGraphOptimizer::VisitLoadContextSlotNoCells(
+    LoadContextSlotNoCells* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
   return ProcessResult::kContinue;
 }
 
-ProcessResult MaglevGraphOptimizer::VisitLoadTaggedFieldForContextSlotNoCells(
-    LoadTaggedFieldForContextSlotNoCells* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
-ProcessResult MaglevGraphOptimizer::VisitLoadTaggedFieldForContextSlot(
-    LoadTaggedFieldForContextSlot* node, const ProcessingState& state) {
+ProcessResult MaglevGraphOptimizer::VisitLoadContextSlot(
+    LoadContextSlot* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
   return ProcessResult::kContinue;
 }
@@ -2045,6 +2046,28 @@ ProcessResult MaglevGraphOptimizer::VisitFloat64Compare(
 ProcessResult MaglevGraphOptimizer::VisitFloat64ToBoolean(
     Float64ToBoolean* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
+  return ProcessResult::kContinue;
+}
+
+ProcessResult MaglevGraphOptimizer::VisitFloat64Min(
+    Float64Min* node, const ProcessingState& state) {
+  MaybeReduceResult result = reducer_.TryFoldFloat64Min(
+      node->left_input().node(), node->right_input().node());
+  if (result.IsDoneWithValue()) {
+    return ReplaceWith(result.value());
+  }
+  DCHECK(!result.IsDone());
+  return ProcessResult::kContinue;
+}
+
+ProcessResult MaglevGraphOptimizer::VisitFloat64Max(
+    Float64Max* node, const ProcessingState& state) {
+  MaybeReduceResult result = reducer_.TryFoldFloat64Max(
+      node->left_input().node(), node->right_input().node());
+  if (result.IsDoneWithValue()) {
+    return ReplaceWith(result.value());
+  }
+  DCHECK(!result.IsDone());
   return ProcessResult::kContinue;
 }
 

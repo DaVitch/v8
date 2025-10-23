@@ -237,6 +237,8 @@ class KnownNodeAspects {
                                        LoopEffects* loop_effects,
                                        Zone* zone) const;
 
+  void ClearUnstableNodeAspectsForStoreMap(StoreMap* node,
+                                           bool is_tracing_enabled);
   void ClearUnstableNodeAspects(bool is_tracing_enabled);
 
   void ClearUnstableMaps() {
@@ -447,87 +449,27 @@ class KnownNodeAspects {
 
   // Cached property loads.
 
-  // Represents a key into the cache. This is either a NameRef, or an enum
-  // value.
-  class LoadedPropertyMapKey {
-   public:
-    enum Type {
-      // kName must be zero so that pointers are unaffected.
-      kName = 0,
-      kElements,
-      kTypedArrayLength,
-      // TODO(leszeks): We could probably share kStringLength with
-      // kTypedArrayLength if needed.
-      kStringLength
-    };
-    static constexpr int kTypeMask = 0x3;
-    static_assert((kName & ~kTypeMask) == 0);
-    static_assert((kElements & ~kTypeMask) == 0);
-    static_assert((kTypedArrayLength & ~kTypeMask) == 0);
-    static_assert((kStringLength & ~kTypeMask) == 0);
-
-    static LoadedPropertyMapKey Elements() {
-      return LoadedPropertyMapKey(kElements);
-    }
-
-    static LoadedPropertyMapKey TypedArrayLength() {
-      return LoadedPropertyMapKey(kTypedArrayLength);
-    }
-
-    static LoadedPropertyMapKey StringLength() {
-      return LoadedPropertyMapKey(kStringLength);
-    }
-
-    // Allow implicit conversion from NameRef to key, so that callers in the
-    // common path can use a NameRef directly.
-    // NOLINTNEXTLINE
-    LoadedPropertyMapKey(compiler::NameRef ref)
-        : data_(reinterpret_cast<Address>(ref.data())) {
-      DCHECK_EQ(data_ & kTypeMask, kName);
-    }
-
-    bool operator==(const LoadedPropertyMapKey& other) const {
-      return data_ == other.data_;
-    }
-    bool operator<(const LoadedPropertyMapKey& other) const {
-      return data_ < other.data_;
-    }
-
-    compiler::NameRef name() {
-      DCHECK_EQ(type(), kName);
-      return compiler::NameRef(reinterpret_cast<compiler::ObjectData*>(data_),
-                               false);
-    }
-
-    Type type() { return static_cast<Type>(data_ & kTypeMask); }
-
-   private:
-    explicit LoadedPropertyMapKey(Type type) : data_(type) {
-      DCHECK_NE(type, kName);
-    }
-
-    Address data_;
-  };
   // Maps key->object->value, so that stores to a key can invalidate all loads
   // of that key (in case the objects are aliasing).
   using LoadedPropertyMap =
-      ZoneMap<LoadedPropertyMapKey, ZoneMap<ValueNode*, ValueNode*>>;
+      ZoneMap<PropertyKey, ZoneMap<ValueNode*, ValueNode*>>;
 
   using LoadedContextSlotsKey = std::tuple<ValueNode*, int>;
   using LoadedContextSlots = ZoneMap<LoadedContextSlotsKey, ValueNode*>;
 
   ValueNode* TryFindLoadedProperty(ValueNode* lookup_start_object,
-                                   LoadedPropertyMapKey name) {
+                                   PropertyKey name) {
     return TryFindLoadedProperty(loaded_properties_, lookup_start_object, name);
   }
   ValueNode* TryFindLoadedConstantProperty(ValueNode* lookup_start_object,
-                                           LoadedPropertyMapKey name) {
+                                           PropertyKey name) {
     return TryFindLoadedProperty(loaded_constant_properties_,
                                  lookup_start_object, name);
   }
 
-  ZoneMap<ValueNode*, ValueNode*>& GetLoadedPropertiesForKey(
-      Zone* zone, bool is_const, KnownNodeAspects::LoadedPropertyMapKey key) {
+  ZoneMap<ValueNode*, ValueNode*>& GetLoadedPropertiesForKey(Zone* zone,
+                                                             bool is_const,
+                                                             PropertyKey key) {
     LoadedPropertyMap& properties =
         is_const ? loaded_constant_properties_ : loaded_properties_;
     // Try to get loaded_properties[key] if it already exists, otherwise
@@ -535,9 +477,8 @@ class KnownNodeAspects {
     return properties.try_emplace(key, zone).first->second;
   }
 
-  bool ClearLoadedPropertiesForKey(KnownNodeAspects::LoadedPropertyMapKey key) {
-    auto it = loaded_properties_.find(
-        KnownNodeAspects::LoadedPropertyMapKey::Elements());
+  bool ClearLoadedPropertiesForKey(PropertyKey key) {
+    auto it = loaded_properties_.find(key);
     if (it != loaded_properties_.end()) {
       it->second.clear();
       return true;
@@ -648,6 +589,46 @@ class KnownNodeAspects {
                                        : loaded_context_constants_.empty();
   }
 
+  template <typename NodeT>
+  void MarkPossibleSideEffect(NodeT* node, compiler::JSHeapBroker* broker,
+                              bool is_tracing_enabled) {
+    // Don't do anything for nodes without side effects.
+    if constexpr (!NodeT::kProperties.can_write()) return;
+
+    increment_effect_epoch();
+
+    if constexpr (Node::opcode_of<NodeT> == Opcode::kMaybeGrowFastElements) {
+      if (ClearLoadedPropertiesForKey(broker->length_string())) {
+        if (V8_UNLIKELY(v8_flags.trace_maglev_graph_building &&
+                        is_tracing_enabled)) {
+          std::cout << "  * Removing non-constant cached \"length\" property";
+        }
+      }
+    }
+
+    if constexpr (IsElementsArrayWrite(Node::opcode_of<NodeT>)) {
+      if (ClearLoadedPropertiesForKey(PropertyKey::Elements())) {
+        if (V8_UNLIKELY(v8_flags.trace_maglev_graph_building &&
+                        is_tracing_enabled)) {
+          std::cout << "  * Removing non-constant cached [Elements]";
+        }
+      }
+    } else if constexpr (std::is_same_v<NodeT, CheckMapsWithMigration> ||
+                         std::is_same_v<NodeT, MigrateMapIfNeeded>) {
+      // These instructions only migrate representations of values, not the
+      // values themselves, so cached values are still valid.
+    } else if constexpr (std::is_same_v<NodeT, StoreMap>) {
+      ClearUnstableNodeAspectsForStoreMap(node, is_tracing_enabled);
+    } else if constexpr (!IsSimpleFieldStore(Node::opcode_of<NodeT>) &&
+                         !IsTypedArrayStore(Node::opcode_of<NodeT>)) {
+      // Don't change known node aspects for simple field stores. The only
+      // relevant side effect on these is writes to objects which invalidate
+      // loaded properties and context slots, and we invalidate these already as
+      // part of emitting the store.
+      ClearUnstableNodeAspects(is_tracing_enabled);
+    }
+  }
+
   explicit KnownNodeAspects(Zone* zone)
       : loaded_constant_properties_(zone),
         loaded_properties_(zone),
@@ -702,7 +683,7 @@ class KnownNodeAspects {
 
   ValueNode* TryFindLoadedProperty(const LoadedPropertyMap& properties,
                                    ValueNode* lookup_start_object,
-                                   LoadedPropertyMapKey name) {
+                                   PropertyKey name) {
     auto props_for_name = properties.find(name);
     if (props_for_name == properties.end()) return nullptr;
 

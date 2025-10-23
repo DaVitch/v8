@@ -284,9 +284,7 @@ DEFINE_BOOL(js_shipping, true, "enable all shipped JavaScript features")
 #define HARMONY_INPROGRESS(V) \
   HARMONY_INPROGRESS_BASE(V)  \
   V(harmony_intl_best_fit_matcher, "Intl BestFitMatcher")
-#define JAVASCRIPT_INPROGRESS_FEATURES(V) \
-  JAVASCRIPT_INPROGRESS_FEATURES_BASE(V)  \
-  V(js_intl_locale_variants, "Intl.Locale.prototype.variants")
+#define JAVASCRIPT_INPROGRESS_FEATURES(V) JAVASCRIPT_INPROGRESS_FEATURES_BASE(V)
 #else
 #define HARMONY_INPROGRESS(V) HARMONY_INPROGRESS_BASE(V)
 #define JAVASCRIPT_INPROGRESS_FEATURES(V) JAVASCRIPT_INPROGRESS_FEATURES_BASE(V)
@@ -299,7 +297,9 @@ DEFINE_BOOL(js_shipping, true, "enable all shipped JavaScript features")
 
 #ifdef V8_INTL_SUPPORT
 #define HARMONY_STAGED(V) HARMONY_STAGED_BASE(V)
-#define JAVASCRIPT_STAGED_FEATURES(V) JAVASCRIPT_STAGED_FEATURES_BASE(V)
+#define JAVASCRIPT_STAGED_FEATURES(V) \
+  JAVASCRIPT_STAGED_FEATURES_BASE(V)  \
+  V(js_intl_locale_variants, "Intl.Locale.prototype.variants")
 #else
 #define HARMONY_STAGED(V) HARMONY_STAGED_BASE(V)
 #define JAVASCRIPT_STAGED_FEATURES(V) JAVASCRIPT_STAGED_FEATURES_BASE(V)
@@ -375,6 +375,9 @@ DEFINE_BOOL(builtin_subclassing, true,
 // SharedArrayBuffer constructor is disabled.
 DEFINE_BOOL(enable_sharedarraybuffer_per_context, false,
             "enable the SharedArrayBuffer constructor per context")
+
+DEFINE_BOOL(js_nonextensible_applies_to_private, false,
+            "non-extensibility includes private fields")
 
 DEFINE_EXPERIMENTAL_FEATURE(
     for_of_optimization,
@@ -3191,12 +3194,6 @@ DEFINE_INT(testing_int_flag, 13, "testing_int_flag")
 DEFINE_FLOAT(testing_float_flag, 2.5, "float-flag")
 DEFINE_STRING(testing_string_flag, "Hello, world!", "string-flag")
 DEFINE_INT(testing_prng_seed, 42, "Seed used for threading test randomness")
-
-// Test flag for a check in %OptimizeFunctionOnNextCall
-DEFINE_BOOL(
-    testing_d8_test_runner, false,
-    "test runner turns on this flag to enable a check that the function was "
-    "prepared for optimization before marking it for optimization")
 
 DEFINE_EXPERIMENTAL_FEATURE(
     strict_termination_checks,
