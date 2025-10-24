@@ -13,6 +13,7 @@
 #include "src/maglev/maglev-graph-processor.h"
 #include "src/maglev/maglev-ir-inl.h"
 #include "src/maglev/maglev-ir.h"
+#include "src/maglev/maglev-known-node-aspects.h"
 #include "src/maglev/maglev-range-analysis.h"
 #include "src/maglev/maglev-reducer-inl.h"
 #include "src/maglev/maglev-reducer.h"
@@ -307,6 +308,19 @@ ReduceResult MaglevGraphOptimizer::EmitUnconditionalDeopt(
   block->RemovePredecessorFollowing(control);
   reducer_.AddNewControlNode<Deopt>({}, reason);
   return ReduceResult::DoneWithAbort();
+}
+
+template <typename NodeT>
+ProcessResult MaglevGraphOptimizer::ProcessLoadContextSlot(NodeT* node) {
+  if (node->is_const()) {
+    if (ValueNode* cached_value = known_node_aspects().TryGetContextCachedValue(
+            node->input_node(0), node->offset(),
+            ContextSlotMutability::kImmutable)) {
+      return ReplaceWith(cached_value);
+    }
+  }
+  // TODO(victorgomes): Optimize non-immutable loads.
+  return ProcessResult::kContinue;
 }
 
 ProcessResult MaglevGraphOptimizer::VisitAssertInt32(
@@ -1038,26 +1052,24 @@ ProcessResult MaglevGraphOptimizer::VisitLoadTaggedField(
       return ReplaceWith(reducer_.GetConstant(input->feedback_cell()));
     }
   }
-  if (node->is_const() && !node->property_key().is_none()) {
-    if (ValueNode* cache = known_node_aspects().TryFindLoadedConstantProperty(
-            node->object_input().node(), node->property_key())) {
+  if (!node->property_key().is_none()) {
+    if (ValueNode* cache = known_node_aspects().TryFindLoadedProperty(
+            node->object_input().node(), node->property_key(),
+            node->is_const())) {
       return ReplaceWith(cache);
     }
   }
-  // TODO(victorgomes): Implement it for non-const loads.
   return ProcessResult::kContinue;
 }
 
 ProcessResult MaglevGraphOptimizer::VisitLoadContextSlotNoCells(
     LoadContextSlotNoCells* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
+  return ProcessLoadContextSlot(node);
 }
 
 ProcessResult MaglevGraphOptimizer::VisitLoadContextSlot(
     LoadContextSlot* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
+  return ProcessLoadContextSlot(node);
 }
 
 ProcessResult MaglevGraphOptimizer::VisitLoadFloat64(

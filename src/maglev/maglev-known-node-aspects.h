@@ -5,12 +5,15 @@
 #ifndef V8_MAGLEV_MAGLEV_KNOWN_NODE_ASPECTS_H_
 #define V8_MAGLEV_MAGLEV_KNOWN_NODE_ASPECTS_H_
 
+#include <utility>
+
 #include "src/maglev/maglev-ir.h"
 
 namespace v8 {
 namespace internal {
 namespace maglev {
 
+class Graph;
 struct LoopEffects;
 
 using PossibleMaps = compiler::ZoneRefSet<Map>;
@@ -466,6 +469,13 @@ class KnownNodeAspects {
     return TryFindLoadedProperty(loaded_constant_properties_,
                                  lookup_start_object, name);
   }
+  ValueNode* TryFindLoadedProperty(ValueNode* lookup_start_object,
+                                   PropertyKey name, bool is_const) {
+    if (is_const) {
+      return TryFindLoadedConstantProperty(lookup_start_object, name);
+    }
+    return TryFindLoadedProperty(lookup_start_object, name);
+  }
 
   ZoneMap<ValueNode*, ValueNode*>& GetLoadedPropertiesForKey(Zone* zone,
                                                              bool is_const,
@@ -564,9 +574,20 @@ class KnownNodeAspects {
   void UpdateMayHaveAliasingContexts(compiler::JSHeapBroker* broker,
                                      LocalIsolate* local_isolate,
                                      ValueNode* context);
+  SmallZoneVector<LoadedContextSlotsKey, 8> ClearAliasedContextSlotsFor(
+      Graph* graph, ValueNode* context, int offset, ValueNode* value);
 
-  LoadedContextSlots& loaded_context_slots() { return loaded_context_slots_; }
-
+  // Returns the value in the cache if exists without adding a new cache entry.
+  ValueNode* TryGetContextCachedValue(ValueNode* context, int offset,
+                                      ContextSlotMutability slot_mutability) {
+    auto map = slot_mutability == kMutable ? loaded_context_slots_
+                                           : loaded_context_constants_;
+    auto it = map.find({context, offset});
+    if (it == map.end()) return nullptr;
+    it->second = it->second->UnwrapIdentities();
+    return it->second;
+  }
+  // Returns the value in the cache and add a new entry.
   ValueNode*& GetContextCachedValue(ValueNode* context, int offset,
                                     ContextSlotMutability slot_mutability) {
     ValueNode*& cached_value =
@@ -577,6 +598,17 @@ class KnownNodeAspects {
       cached_value = cached_value->UnwrapIdentities();
     }
     return cached_value;
+  }
+  // Returns true if value was added to the cache, or false if the value updated
+  // the cache.
+  bool SetContextCachedValue(ValueNode* context, int offset, ValueNode* value) {
+    auto it = loaded_context_slots_.find({context, offset});
+    if (it == loaded_context_slots_.end()) {
+      loaded_context_slots_.insert({{context, offset}, value});
+      return true;
+    }
+    it->second = value;
+    return false;
   }
   bool HasContextCacheValue(ValueNode* context, int offset,
                             ContextSlotMutability slot_mutability) {
