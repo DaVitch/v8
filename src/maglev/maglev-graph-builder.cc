@@ -298,6 +298,13 @@ class CallArguments {
     args_.pop_back();
   }
 
+  void ResizeDefaultArguments(size_t new_count) {
+    DCHECK_EQ(mode_, kDefault);
+    DCHECK_GT(count(), new_count);
+    args_.resize(new_count + index_offset());
+    DCHECK_EQ(count(), new_count);
+  }
+
   void PopReceiver(ConvertReceiverMode new_receiver_mode) {
     DCHECK_NE(receiver_mode_, ConvertReceiverMode::kNullOrUndefined);
     DCHECK_NE(new_receiver_mode, ConvertReceiverMode::kNullOrUndefined);
@@ -4495,14 +4502,17 @@ ValueNode* MaglevGraphBuilder::ConvertForField(ValueNode* value,
                                                AllocationType allocation_type) {
   switch (desc.type) {
     case vobj::FieldType::kTagged: {
-      if (NodeTypeIs(GetType(value), NodeType::kSmi)) {
+      // Subtle: we don't use `NodeTypeIs(...)` since the predicate must NOT
+      // be true for NodeType::kNone.
+      // TODO(jgruber): NodeType::kNone should never reach here.
+      if (GetType(value) == NodeType::kSmi) {
         // TODO(jgruber): This is needed because HoleyFloat64ToTagged does not
         // canonicalize smis by default in GetTaggedValue. We rely on
         // canonicalization though in TryReduceConstructArrayConstructor.
         // We should make this more robust.
         MaybeReduceResult res = GetSmiValue(value);
-        DCHECK(res.IsDoneWithPayload());
-        return res.node()->Cast<ValueNode>();
+        CHECK(res.IsDoneWithValue());
+        return res.value();
       }
       if (value->Is<Float64Constant>()) {
         // Note that NodeType::kSmi MUST go through GetSmiValue for proper
@@ -11314,6 +11324,22 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildCallKnownJSFunction(
     compiler::SharedFunctionInfoRef shared,
     compiler::FeedbackCellRef feedback_cell, CallArguments& args,
     const compiler::FeedbackSource& feedback_source) {
+  // Truncate args when they are unreachable.
+  if (args.mode() == CallArguments::kDefault &&
+      shared.object()->CanOnlyAccessFixedFormalParameters()) {
+#ifdef V8_ENABLE_LEAPTIERING
+    auto parameter_count =
+        IsolateGroup::current()->js_dispatch_table()->GetParameterCount(
+            dispatch_handle);
+#else
+    auto parameter_count =
+        shared_function_info
+            .internal_formal_parameter_count_with_receiver_deprecated();
+#endif
+    if (args.count() > parameter_count - kJSArgcReceiverSlots) {
+      args.ResizeDefaultArguments(parameter_count - kJSArgcReceiverSlots);
+    }
+  }
   if (v8_flags.maglev_inlining) {
     RETURN_IF_DONE(TryBuildInlineCall(context, function, new_target,
 #ifdef V8_ENABLE_LEAPTIERING
