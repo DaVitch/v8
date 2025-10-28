@@ -1017,10 +1017,13 @@ void Heap::GarbageCollectionPrologueInSafepoint(GarbageCollector collector) {
   TRACE_GC(tracer(), GCTracer::Scope::HEAP_PROLOGUE_SAFEPOINT);
   gc_count_++;
   new_space_allocation_counter_ = NewSpaceAllocationCounter();
-  if (v8_flags.large_page_pool_timeout == 0 &&
+  // We provide a fallback for the case when the page pool timeout is disabled.
+  // This is to prevent unbounded growth of the pool for the non-default
+  // configuration.
+  if (V8_UNLIKELY(v8_flags.page_pool_timeout == 0) &&
       collector == GarbageCollector::MARK_COMPACTOR) {
     if (auto* memory_pool = isolate_->isolate_group()->memory_pool()) {
-      memory_pool->ReleaseLargeImmediately();
+      memory_pool->ReleaseImmediately(isolate_);
     }
   }
 }
@@ -3887,7 +3890,7 @@ bool Heap::IsIneffectiveMarkCompact(size_t old_generation_size,
   bool high_heap_ratio =
       (old_generation_size >=
        v8_flags.ineffective_gc_size_threshold * max_old_generation_size());
-  if (v8_flags.external_memory_accounted_in_global_limit) {
+  if (v8_flags.ineffective_gc_includes_global) {
     high_heap_ratio |= (global_size >= v8_flags.ineffective_gc_size_threshold *
                                            max_global_memory_size_);
   }

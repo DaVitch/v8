@@ -2394,6 +2394,8 @@ DEFINE_BOOL(parallel_weak_ref_clearing, true,
             "use parallel threads to clear weak refs in the atomic pause.")
 DEFINE_BOOL(detect_ineffective_gcs_near_heap_limit, true,
             "trigger out-of-memory failure to avoid GC storm near heap limit")
+DEFINE_BOOL(ineffective_gc_includes_global, false,
+            "includes global size in out-of-memory failure near heap limit")
 DEFINE_BOOL(ineffective_gcs_forces_last_resort, false,
             "force a last resort GC when we're near heap limit")
 DEFINE_FLOAT(
@@ -2549,8 +2551,7 @@ DEFINE_BOOL(large_page_pool, true, "Add large pages to the page pool")
 DEFINE_WEAK_IMPLICATION(future, large_page_pool)
 DEFINE_SIZE_T(max_large_page_pool_size, 32,
               "Maximum size of pooled large pages in MB.")
-DEFINE_INT(large_page_pool_timeout, 3,
-           "Release pooled large pages after X seconds.")
+DEFINE_INT(page_pool_timeout, 8, "Release pooled pages after X seconds.")
 DEFINE_BOOL(managed_zone_memory, false,
             "Manage zone memory in V8 instead of using malloc().")
 DEFINE_NEG_NEG_IMPLICATION(memory_pool, managed_zone_memory)
