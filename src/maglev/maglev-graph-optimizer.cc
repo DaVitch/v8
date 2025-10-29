@@ -312,14 +312,12 @@ ReduceResult MaglevGraphOptimizer::EmitUnconditionalDeopt(
 
 template <typename NodeT>
 ProcessResult MaglevGraphOptimizer::ProcessLoadContextSlot(NodeT* node) {
-  if (node->is_const()) {
-    if (ValueNode* cached_value = known_node_aspects().TryGetContextCachedValue(
-            node->input_node(0), node->offset(),
-            ContextSlotMutability::kImmutable)) {
-      return ReplaceWith(cached_value);
-    }
+  if (ValueNode* cached_value = known_node_aspects().TryGetContextCachedValue(
+          node->input_node(0), node->offset(),
+          node->is_const() ? ContextSlotMutability::kImmutable
+                           : ContextSlotMutability::kMutable)) {
+    return ReplaceWith(cached_value);
   }
-  // TODO(victorgomes): Optimize non-immutable loads.
   return ProcessResult::kContinue;
 }
 
@@ -769,18 +767,6 @@ ProcessResult MaglevGraphOptimizer::VisitTransitionAndStoreArrayElement(
   return ProcessResult::kContinue;
 }
 
-ProcessResult MaglevGraphOptimizer::VisitConstantGapMove(
-    ConstantGapMove* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
-ProcessResult MaglevGraphOptimizer::VisitGapMove(GapMove* node,
-                                                 const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
 ProcessResult MaglevGraphOptimizer::VisitIdentity(
     Identity* node, const ProcessingState& state) {
   // If a non-eager inlined function returns a tagged value, we substitute the
@@ -821,12 +807,6 @@ ProcessResult MaglevGraphOptimizer::VisitCall(Call* node,
 
 ProcessResult MaglevGraphOptimizer::VisitCallBuiltin(
     CallBuiltin* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
-ProcessResult MaglevGraphOptimizer::VisitCallCPPBuiltin(
-    CallCPPBuiltin* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
   return ProcessResult::kContinue;
 }
@@ -1398,12 +1378,6 @@ ProcessResult MaglevGraphOptimizer::VisitTruncateHoleyFloat64ToInt32(
   return ProcessResult::kContinue;
 }
 
-ProcessResult MaglevGraphOptimizer::VisitUnsafeUint32ToInt32(
-    UnsafeUint32ToInt32* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
 ProcessResult MaglevGraphOptimizer::VisitUnsafeHoleyFloat64ToInt32(
     UnsafeHoleyFloat64ToInt32* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
@@ -1767,12 +1741,6 @@ ProcessResult MaglevGraphOptimizer::VisitNumberToString(
 
 ProcessResult MaglevGraphOptimizer::VisitUpdateJSArrayLength(
     UpdateJSArrayLength* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
-ProcessResult MaglevGraphOptimizer::VisitVirtualObject(
-    VirtualObject* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
   return ProcessResult::kContinue;
 }
@@ -2423,12 +2391,6 @@ ProcessResult MaglevGraphOptimizer::VisitBranchIfJSReceiver(
   return ProcessResult::kContinue;
 }
 
-ProcessResult MaglevGraphOptimizer::VisitBranchIfTypeOf(
-    BranchIfTypeOf* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
 ProcessResult MaglevGraphOptimizer::VisitJump(Jump* node,
                                               const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
@@ -2459,6 +2421,27 @@ ProcessResult MaglevGraphOptimizer::VisitJumpLoop(
 
   return ProcessResult::kContinue;
 }
+
+// Nodes never emitted before Graph optimizer.
+#define UNREACHABLE_NODES(X) \
+  X(ConstantGapMove)         \
+  X(GapMove)                 \
+  X(VirtualObject)
+
+// Nodes unused by maglev but still existing.
+#define NON_EMITTED_NODES(X) \
+  X(CallCPPBuiltin)          \
+  X(UnsafeUint32ToInt32)     \
+  X(BranchIfTypeOf)
+
+#define UNREACHEABLE_VISITOR(Node)                                          \
+  ProcessResult MaglevGraphOptimizer::Visit##Node(Node* node,               \
+                                                  const ProcessingState&) { \
+    UNREACHABLE();                                                          \
+  }
+
+UNREACHABLE_NODES(UNREACHEABLE_VISITOR)
+NON_EMITTED_NODES(UNREACHEABLE_VISITOR)
 
 }  // namespace maglev
 }  // namespace internal
