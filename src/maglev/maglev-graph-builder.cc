@@ -3239,7 +3239,7 @@ MaybeReduceResult MaglevGraphBuilder::TrySpecializeStoreContextSlot(
   int offset = Context::OffsetOfElementAt(index);
   if (!maybe_value->IsContextCell()) {
     return BuildStoreTaggedField(context, value, offset,
-                                 StoreTaggedMode::kDefault);
+                                 StoreTaggedMode::kDefaultToContext);
   }
 
   compiler::ContextCellRef slot_ref = maybe_value->AsContextCell();
@@ -3261,22 +3261,19 @@ MaybeReduceResult MaglevGraphBuilder::TrySpecializeStoreContextSlot(
       // GetSmiValue to force canonicalization for the value if necessary.
       RETURN_IF_ABORT(GetSmiValue(value));
       broker()->dependencies()->DependOnContextCell(slot_ref, state);
-      return BuildStoreTaggedFieldNoWriteBarrier(
-          GetConstant(slot_ref), value, offsetof(ContextCell, tagged_value_),
-          StoreTaggedMode::kDefault);
+      return AddNewNode<StoreSmiContextCell>({value}, context_ref, slot_ref,
+                                             offset);
     case ContextCell::kInt32:
       EnsureInt32(value, true);
       broker()->dependencies()->DependOnContextCell(slot_ref, state);
-      return AddNewNode<StoreInt32>(
-          {GetConstant(slot_ref), value},
-          static_cast<int>(offsetof(ContextCell, double_value_)));
+      return AddNewNode<StoreInt32ContextCell>({value}, context_ref, slot_ref,
+                                               offset);
 
     case ContextCell::kFloat64:
       RETURN_IF_ABORT(BuildCheckNumber(value));
       broker()->dependencies()->DependOnContextCell(slot_ref, state);
-      return AddNewNode<StoreFloat64>(
-          {GetConstant(slot_ref), value},
-          static_cast<int>(offsetof(ContextCell, double_value_)));
+      return AddNewNode<StoreFloat64ContextCell>({value}, context_ref, slot_ref,
+                                                 offset);
     case ContextCell::kDetached:
       return BuildStoreTaggedField(context, value, offset,
                                    StoreTaggedMode::kDefaultToContext);
@@ -9798,6 +9795,46 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildStoreDataView(
   RETURN_IF_ABORT(
       AddNewNode<StoreNode>({receiver, offset, value, is_little_endian}, type));
   return GetRootConstant(RootIndex::kUndefinedValue);
+}
+
+MaybeReduceResult MaglevGraphBuilder::TryReduceDataViewPrototypeGetByteLength(
+    compiler::JSFunctionRef target, CallArguments& args) {
+  // We cannot check CanSpeculateCall here, since this is a getter.
+
+  if (!broker()->dependencies()->DependOnArrayBufferDetachingProtector()) {
+    // TODO(victorgomes): Add checks whether the array has been detached.
+    return {};
+  }
+  // TODO(victorgomes): Add data view to known types.
+  ValueNode* receiver = GetValueOrUndefined(args.receiver());
+
+  auto possible_receiver_maps =
+      known_node_aspects().TryGetPossibleMaps(receiver);
+  if (!possible_receiver_maps) {
+    FAIL(" to reduce DataView.get byteLength - unknown receiver map");
+  }
+
+  // Don't optimize if any of the known maps is something else than a DataView
+  // map.
+  for (compiler::MapRef map : *possible_receiver_maps) {
+    // TODO(v8:11111): Optimize for JS_RAB_GSAB_DATA_VIEW_TYPE too.
+    if (map.instance_type() != JS_DATA_VIEW_TYPE) {
+      return {};
+    }
+  }
+
+  // Note: We can't use broker()->byte_length_string() here, because it could
+  // conflict with redefinitions of the ArrayBufferView byteLength property.
+  if (ValueNode* length = known_node_aspects().TryFindLoadedConstantProperty(
+          receiver, PropertyKey::ArrayBufferViewByteLength())) {
+    return length;
+  }
+
+  ValueNode* result;
+  GET_VALUE_OR_ABORT(result, AddNewNode<LoadDataViewByteLength>({receiver}));
+  RecordKnownProperty(receiver, PropertyKey::ArrayBufferViewByteLength(),
+                      result, true, compiler::AccessMode::kLoad);
+  return result;
 }
 
 MaybeReduceResult MaglevGraphBuilder::TryReduceDataViewPrototypeGetInt8(

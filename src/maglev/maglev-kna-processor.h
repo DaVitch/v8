@@ -280,11 +280,15 @@ class RecomputeKnownNodeAspectsProcessor {
     return ProcessResult::kContinue;
   }
 
-  template <typename NodeT>
-  void ProcessStoreContextSlot(NodeT* node) {
-    ValueNode* context = node->input_node(0);
-    ValueNode* value = node->input_node(1);
-    int offset = node->offset();
+  ProcessResult ProcessNode(LoadDataViewByteLength* node) {
+    auto& props_for_key = known_node_aspects().GetLoadedPropertiesForKey(
+        zone(), true, PropertyKey::ArrayBufferViewByteLength());
+    props_for_key[node->receiver_input().node()] = node;
+    return ProcessResult::kContinue;
+  }
+
+  void ProcessStoreContextSlot(ValueNode* context, ValueNode* value,
+                               int offset) {
     known_node_aspects().ClearAliasedContextSlotsFor(graph_, context, offset,
                                                      value);
     known_node_aspects().SetContextCachedValue(context, offset, value);
@@ -294,7 +298,9 @@ class RecomputeKnownNodeAspectsProcessor {
   void ProcessStoreTaggedField(NodeT* node) {
     // If a store to a context, we use the specialized context slot cache.
     if (node->is_store_to_context()) {
-      return ProcessStoreContextSlot(node);
+      return ProcessStoreContextSlot(node->object_input().node(),
+                                     node->value_input().node(),
+                                     node->offset());
     }
     // ... otherwise we try the properties cache.
     if (node->property_key().is_none()) return;
@@ -322,12 +328,11 @@ class RecomputeKnownNodeAspectsProcessor {
 
   template <typename NodeT>
   void ProcessLoadContextSlot(NodeT* node) {
-    if (node->is_const()) {
-      ValueNode*& cached_value = known_node_aspects().GetContextCachedValue(
-          node->input_node(0), node->offset(),
-          ContextSlotMutability::kImmutable);
-      if (!cached_value) cached_value = node;
-    }
+    ValueNode*& cached_value = known_node_aspects().GetContextCachedValue(
+        node->input_node(0), node->offset(),
+        node->is_const() ? ContextSlotMutability::kImmutable
+                         : ContextSlotMutability::kMutable);
+    if (!cached_value) cached_value = node;
   }
 
   ProcessResult ProcessNode(LoadContextSlot* node) {
@@ -341,7 +346,26 @@ class RecomputeKnownNodeAspectsProcessor {
   }
 
   ProcessResult ProcessNode(StoreContextSlotWithWriteBarrier* node) {
-    ProcessStoreContextSlot(node);
+    ProcessStoreContextSlot(node->context_input().node(),
+                            node->new_value_input().node(), node->offset());
+    return ProcessResult::kContinue;
+  }
+
+  ProcessResult ProcessNode(StoreSmiContextCell* node) {
+    ProcessStoreContextSlot(graph_->GetConstant(node->context()),
+                            node->value_input().node(), node->slot_offset());
+    return ProcessResult::kContinue;
+  }
+
+  ProcessResult ProcessNode(StoreInt32ContextCell* node) {
+    ProcessStoreContextSlot(graph_->GetConstant(node->context()),
+                            node->value_input().node(), node->slot_offset());
+    return ProcessResult::kContinue;
+  }
+
+  ProcessResult ProcessNode(StoreFloat64ContextCell* node) {
+    ProcessStoreContextSlot(graph_->GetConstant(node->context()),
+                            node->value_input().node(), node->slot_offset());
     return ProcessResult::kContinue;
   }
 

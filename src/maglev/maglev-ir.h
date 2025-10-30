@@ -242,6 +242,7 @@ class ExceptionHandlerInfo;
   V(LoadSignedIntDataViewElement)                                     \
   V(LoadDoubleDataViewElement)                                        \
   V(LoadTypedArrayLength)                                             \
+  V(LoadDataViewByteLength)                                           \
   V(LoadSignedIntTypedArrayElement)                                   \
   V(LoadUnsignedIntTypedArrayElement)                                 \
   V(LoadDoubleTypedArrayElement)                                      \
@@ -411,6 +412,9 @@ class ExceptionHandlerInfo;
   V(StoreDoubleDataViewElement)               \
   V(StoreTaggedFieldNoWriteBarrier)           \
   V(StoreTaggedFieldWithWriteBarrier)         \
+  V(StoreSmiContextCell)                      \
+  V(StoreInt32ContextCell)                    \
+  V(StoreFloat64ContextCell)                  \
   V(StoreContextSlotWithWriteBarrier)         \
   V(StoreTrustedPointerFieldWithWriteBarrier) \
   V(HandleNoHeapWritesInterrupt)              \
@@ -8282,6 +8286,27 @@ class LoadTypedArrayLength
   ElementsKind elements_kind_;
 };
 
+class LoadDataViewByteLength
+    : public FixedInputValueNodeT<1, LoadDataViewByteLength> {
+  using Base = FixedInputValueNodeT<1, LoadDataViewByteLength>;
+
+ public:
+  explicit LoadDataViewByteLength(uint64_t bitfield) : Base(bitfield) {}
+  static constexpr OpProperties kProperties =
+      OpProperties::IntPtr() | OpProperties::CanRead();
+  static constexpr
+      typename Base::InputTypes kInputTypes{ValueRepresentation::kTagged};
+
+  static constexpr int kReceiverIndex = 0;
+  Input receiver_input() { return input(kReceiverIndex); }
+
+  void SetValueLocationConstraints();
+  void GenerateCode(MaglevAssembler*, const ProcessingState&);
+  void PrintParams(std::ostream&) const {}
+
+  auto options() const { return std::tuple{}; }
+};
+
 class CheckTypedArrayNotDetached
     : public FixedInputNodeT<1, CheckTypedArrayNotDetached> {
   using Base = FixedInputNodeT<1, CheckTypedArrayNotDetached>;
@@ -9076,6 +9101,7 @@ class PropertyKey {
     // TODO(leszeks): We could probably share kStringLength with
     // kTypedArrayLength if needed.
     kStringLength,
+    kArrayBufferViewByteLength,
     kNone,
   };
   static constexpr int kTypeMask = 0x7;
@@ -9092,6 +9118,9 @@ class PropertyKey {
   }
 
   static PropertyKey StringLength() { return PropertyKey(kStringLength); }
+  static PropertyKey ArrayBufferViewByteLength() {
+    return PropertyKey(kArrayBufferViewByteLength);
+  }
 
   static PropertyKey None() { return PropertyKey(kNone); }
 
@@ -9141,6 +9170,9 @@ inline std::ostream& operator<<(std::ostream& os, PropertyKey key) {
       break;
     case PropertyKey::kStringLength:
       os << "String length";
+      break;
+    case PropertyKey::kArrayBufferViewByteLength:
+      os << "TypedArray/DataView byteLength";
       break;
     case PropertyKey::kNone:
       os << "None";
@@ -10229,6 +10261,122 @@ class StoreTaggedFieldWithWriteBarrier
 
   const int offset_;
   const PropertyKey property_key_;
+};
+
+class StoreSmiContextCell : public FixedInputNodeT<1, StoreSmiContextCell> {
+  using Base = FixedInputNodeT<1, StoreSmiContextCell>;
+
+ public:
+  explicit StoreSmiContextCell(uint64_t bitfield, compiler::ContextRef context,
+                               compiler::ContextCellRef context_cell,
+                               int slot_offset)
+      : Base(bitfield),
+        context_(context),
+        context_cell_(context_cell),
+        slot_offset_(slot_offset) {}
+
+  static constexpr OpProperties kProperties =
+      OpProperties::CanWrite() | OpProperties::DeferredCall();
+  static constexpr
+      typename Base::InputTypes kInputTypes{ValueRepresentation::kTagged};
+
+  compiler::ContextRef context() const { return context_; }
+  compiler::ContextCellRef cell() const { return context_cell_; }
+  int offset() const { return offsetof(ContextCell, tagged_value_); }
+  int slot_offset() const { return slot_offset_; }
+
+  static constexpr int kValueIndex = 0;
+  Input value_input() { return input(kValueIndex); }
+
+#ifdef V8_COMPRESS_POINTERS
+  void MarkTaggedInputsAsDecompressing() {
+    value_input().node()->SetTaggedResultNeedsDecompress();
+  }
+#endif
+
+  int MaxCallStackArgs() const {
+    // StoreTaggedFieldNoWriteBarrier never really does any call.
+    return 0;
+  }
+  void SetValueLocationConstraints();
+  void GenerateCode(MaglevAssembler*, const ProcessingState&);
+  void PrintParams(std::ostream&) const;
+
+ private:
+  const compiler::ContextRef context_;
+  const compiler::ContextCellRef context_cell_;
+  const int slot_offset_;
+};
+
+class StoreInt32ContextCell : public FixedInputNodeT<1, StoreInt32ContextCell> {
+  using Base = FixedInputNodeT<1, StoreInt32ContextCell>;
+
+ public:
+  explicit StoreInt32ContextCell(uint64_t bitfield,
+                                 compiler::ContextRef context,
+                                 compiler::ContextCellRef context_cell,
+                                 int slot_offset)
+      : Base(bitfield),
+        context_(context),
+        context_cell_(context_cell),
+        slot_offset_(slot_offset) {}
+
+  static constexpr OpProperties kProperties = OpProperties::CanWrite();
+  static constexpr
+      typename Base::InputTypes kInputTypes{ValueRepresentation::kInt32};
+
+  compiler::ContextRef context() const { return context_; }
+  compiler::ContextCellRef cell() const { return context_cell_; }
+  int offset() const { return offsetof(ContextCell, double_value_); }
+  int slot_offset() const { return slot_offset_; }
+
+  static constexpr int kValueIndex = 0;
+  Input value_input() { return input(kValueIndex); }
+
+  void SetValueLocationConstraints();
+  void GenerateCode(MaglevAssembler*, const ProcessingState&);
+  void PrintParams(std::ostream&) const;
+
+ private:
+  const compiler::ContextRef context_;
+  const compiler::ContextCellRef context_cell_;
+  const int slot_offset_;
+};
+
+class StoreFloat64ContextCell
+    : public FixedInputNodeT<1, StoreFloat64ContextCell> {
+  using Base = FixedInputNodeT<1, StoreFloat64ContextCell>;
+
+ public:
+  explicit StoreFloat64ContextCell(uint64_t bitfield,
+                                   compiler::ContextRef context,
+                                   compiler::ContextCellRef context_cell,
+                                   int slot_offset)
+      : Base(bitfield),
+        context_(context),
+        context_cell_(context_cell),
+        slot_offset_(slot_offset) {}
+
+  static constexpr OpProperties kProperties = OpProperties::CanWrite();
+  static constexpr
+      typename Base::InputTypes kInputTypes{ValueRepresentation::kFloat64};
+
+  compiler::ContextRef context() const { return context_; }
+  compiler::ContextCellRef cell() const { return context_cell_; }
+  int offset() const { return offsetof(ContextCell, double_value_); }
+  int slot_offset() const { return slot_offset_; }
+
+  static constexpr int kValueIndex = 0;
+  Input value_input() { return input(kValueIndex); }
+
+  void SetValueLocationConstraints();
+  void GenerateCode(MaglevAssembler*, const ProcessingState&);
+  void PrintParams(std::ostream&) const;
+
+ private:
+  const compiler::ContextRef context_;
+  const compiler::ContextCellRef context_cell_;
+  const int slot_offset_;
 };
 
 class StoreContextSlotWithWriteBarrier

@@ -186,9 +186,18 @@ ValueNode* MaglevGraphOptimizer::GetUntaggedValueWithRepresentation(
   }
   // We try getting constant before bailing out and/or calling the reducer,
   // since it does not emit a conversion node.
-  if (auto cst = GetConstantWithRepresentation(node, use_repr, conversion_type))
+  if (ValueNode* cst =
+          GetConstantWithRepresentation(node, use_repr, conversion_type)) {
     return cst;
-  if (node->is_tagged()) return nullptr;
+  }
+  if (node->is_tagged()) {
+    // Check if we already have a canonical conversion.
+    NodeInfo* node_info =
+        known_node_aspects().GetOrCreateInfoFor(broker(), node);
+    auto& alternative = node_info->alternative();
+    if (ValueNode* alt = alternative.get(use_repr)) return alt;
+    return nullptr;
+  }
   // TODO(victorgomes): The GetXXX functions may emit a conversion node that
   // might eager deopt. We need to find a correct eager deopt frame for them if
   // current_node_ does not have a deopt info.
@@ -635,6 +644,24 @@ ProcessResult MaglevGraphOptimizer::VisitStoreTaggedFieldWithWriteBarrier(
 
 ProcessResult MaglevGraphOptimizer::VisitStoreContextSlotWithWriteBarrier(
     StoreContextSlotWithWriteBarrier* node, const ProcessingState& state) {
+  // TODO(b/424157317): Optimize.
+  return ProcessResult::kContinue;
+}
+
+ProcessResult MaglevGraphOptimizer::VisitStoreSmiContextCell(
+    StoreSmiContextCell* node, const ProcessingState& state) {
+  // TODO(b/424157317): Optimize.
+  return ProcessResult::kContinue;
+}
+
+ProcessResult MaglevGraphOptimizer::VisitStoreInt32ContextCell(
+    StoreInt32ContextCell* node, const ProcessingState& state) {
+  // TODO(b/424157317): Optimize.
+  return ProcessResult::kContinue;
+}
+
+ProcessResult MaglevGraphOptimizer::VisitStoreFloat64ContextCell(
+    StoreFloat64ContextCell* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
   return ProcessResult::kContinue;
 }
@@ -1111,6 +1138,16 @@ ProcessResult MaglevGraphOptimizer::VisitLoadDoubleDataViewElement(
 ProcessResult MaglevGraphOptimizer::VisitLoadTypedArrayLength(
     LoadTypedArrayLength* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
+  return ProcessResult::kContinue;
+}
+
+ProcessResult MaglevGraphOptimizer::VisitLoadDataViewByteLength(
+    LoadDataViewByteLength* node, const ProcessingState& state) {
+  if (ValueNode* cached = known_node_aspects().TryFindLoadedConstantProperty(
+          node->receiver_input().node(),
+          PropertyKey::ArrayBufferViewByteLength())) {
+    return ReplaceWith(cached);
+  }
   return ProcessResult::kContinue;
 }
 

@@ -758,11 +758,11 @@ template <typename IsolateT>
 bool Object::BooleanValue(Tagged<Object> obj, IsolateT* isolate) {
   if (IsSmi(obj)) return Smi::ToInt(obj) != 0;
   DCHECK(IsHeapObject(obj));
+#ifdef V8_ENABLE_WEBASSEMBLY
+  DCHECK(!IsWasmNull(obj));
+#endif
   if (IsBoolean(obj)) return IsTrue(obj, isolate);
   if (IsNullOrUndefined(obj, isolate)) return false;
-#ifdef V8_ENABLE_WEBASSEMBLY
-  if (IsWasmNull(obj)) return false;
-#endif
   if (IsUndetectable(obj)) return false;  // Undetectable object is false.
   if (IsString(obj)) return Cast<String>(obj)->length() != 0;
   if (IsHeapNumber(obj)) return DoubleToBoolean(Cast<HeapNumber>(obj)->value());
@@ -3952,9 +3952,9 @@ void DescriptorArray::CopyFrom(InternalIndex index,
   Set(index, src->GetKey(index), src->GetValue(index), details);
 }
 
-void DescriptorArray::Sort() {
+void DescriptorArray::SortImpl(const int len) {
   // In-place heap sort.
-  const int len = number_of_descriptors();
+  DCHECK_EQ(len, number_of_descriptors());
   // Reset sorting since the descriptor array might contain invalid pointers.
   for (int i = 0; i < len; ++i) SetSortedKey(i, i);
   // Bottom-up max-heap construction.
