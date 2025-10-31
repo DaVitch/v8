@@ -1349,12 +1349,6 @@ ProcessResult MaglevGraphOptimizer::VisitCheckedInt32ToUint32(
   return ProcessResult::kContinue;
 }
 
-ProcessResult MaglevGraphOptimizer::VisitCheckedIntPtrToUint32(
-    CheckedIntPtrToUint32* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
 ProcessResult MaglevGraphOptimizer::VisitUnsafeInt32ToUint32(
     UnsafeInt32ToUint32* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
@@ -1393,12 +1387,6 @@ ProcessResult MaglevGraphOptimizer::VisitChangeIntPtrToFloat64(
 
 ProcessResult MaglevGraphOptimizer::VisitCheckedHoleyFloat64ToInt32(
     CheckedHoleyFloat64ToInt32* node, const ProcessingState& state) {
-  // TODO(b/424157317): Optimize.
-  return ProcessResult::kContinue;
-}
-
-ProcessResult MaglevGraphOptimizer::VisitCheckedHoleyFloat64ToUint32(
-    CheckedHoleyFloat64ToUint32* node, const ProcessingState& state) {
   // TODO(b/424157317): Optimize.
   return ProcessResult::kContinue;
 }
@@ -2465,12 +2453,6 @@ ProcessResult MaglevGraphOptimizer::VisitJumpLoop(
   X(GapMove)                 \
   X(VirtualObject)
 
-// Nodes unused by maglev but still existing.
-#define NON_EMITTED_NODES(X) \
-  X(CallCPPBuiltin)          \
-  X(UnsafeUint32ToInt32)     \
-  X(BranchIfTypeOf)
-
 #define UNREACHEABLE_VISITOR(Node)                                          \
   ProcessResult MaglevGraphOptimizer::Visit##Node(Node* node,               \
                                                   const ProcessingState&) { \
@@ -2478,7 +2460,6 @@ ProcessResult MaglevGraphOptimizer::VisitJumpLoop(
   }
 
 UNREACHABLE_NODES(UNREACHEABLE_VISITOR)
-NON_EMITTED_NODES(UNREACHEABLE_VISITOR)
 
 }  // namespace maglev
 }  // namespace internal

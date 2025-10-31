@@ -194,7 +194,6 @@ class ExceptionHandlerInfo;
   V(RestLength)                                                       \
   V(Call)                                                             \
   V(CallBuiltin)                                                      \
-  V(CallCPPBuiltin)                                                   \
   V(CallForwardVarargs)                                               \
   V(CallRuntime)                                                      \
   V(CallWithArrayLike)                                                \
@@ -278,7 +277,6 @@ class ExceptionHandlerInfo;
   V(TruncateCheckedNumberOrOddballToInt32)                            \
   V(TruncateUnsafeNumberOrOddballToInt32)                             \
   V(CheckedInt32ToUint32)                                             \
-  V(CheckedIntPtrToUint32)                                            \
   V(UnsafeInt32ToUint32)                                              \
   V(CheckedUint32ToInt32)                                             \
   V(CheckedIntPtrToInt32)                                             \
@@ -287,10 +285,8 @@ class ExceptionHandlerInfo;
   V(ChangeIntPtrToFloat64)                                            \
   V(CheckedHoleyFloat64ToInt32)                                       \
   V(UnsafeHoleyFloat64ToInt32)                                        \
-  V(CheckedHoleyFloat64ToUint32)                                      \
   V(TruncateHoleyFloat64ToInt32)                                      \
   V(TruncateUint32ToInt32)                                            \
-  V(UnsafeUint32ToInt32)                                              \
   V(Int32ToUint8Clamped)                                              \
   V(Uint32ToUint8Clamped)                                             \
   V(Float64ToUint8Clamped)                                            \
@@ -449,8 +445,7 @@ class ExceptionHandlerInfo;
   V(BranchIfFloat64Compare)                  \
   V(BranchIfUndefinedOrNull)                 \
   V(BranchIfUndetectable)                    \
-  V(BranchIfJSReceiver)                      \
-  V(BranchIfTypeOf)
+  V(BranchIfJSReceiver)
 
 #define CONDITIONAL_CONTROL_NODE_LIST(V) \
   V(Switch)                              \
@@ -566,7 +561,6 @@ constexpr bool IsCommutativeNode(Opcode opcode) {
 constexpr bool IsZeroCostNode(Opcode opcode) {
   switch (opcode) {
     case Opcode::kTruncateUint32ToInt32:
-    case Opcode::kUnsafeUint32ToInt32:
     case Opcode::kIdentity:
       return true;
     default:
@@ -859,8 +853,9 @@ typedef base::EnumSet<UseRepresentation, int8_t> UseRepresentationSet;
   V(JSArray, (1 << 13))                             \
   V(JSFunction, (1 << 14))                          \
   V(OtherCallable, (1 << 15))                       \
-  V(OtherHeapObject, (1 << 16))                     \
-  V(OtherJSReceiver, (1 << 17))
+  V(JSDataView, (1 << 16))                          \
+  V(OtherHeapObject, (1 << 17))                     \
+  V(OtherJSReceiver, (1 << 18))
 
 #define COUNT(...) +1
 static constexpr int kNumberOfLeafNodeTypes = 0 LEAF_NODE_TYPE_LIST(COUNT);
@@ -1069,6 +1064,7 @@ inline NodeType StaticTypeForMap(compiler::MapRef map,
   if (map.is_callable()) {
     return NodeType::kCallable;
   }
+  if (map.IsJSDataViewMap()) return NodeType::kJSDataView;
   if (map.IsJSReceiverMap()) {
     // JSReceiver but not any of the above.
     return NodeType::kOtherJSReceiver;
@@ -1138,6 +1134,8 @@ inline bool IsInstanceOfLeafNodeType(compiler::MapRef map, NodeType type,
       return map.is_callable();
     case NodeType::kOtherCallable:
       return map.is_callable() && !map.IsJSFunctionMap();
+    case NodeType::kJSDataView:
+      return map.IsJSDataViewMap();
     case NodeType::kOtherJSReceiver:
       return map.IsJSReceiverMap() && !map.IsJSArrayMap() &&
              !map.is_callable() && !map.IsStringWrapperMap();
@@ -4586,26 +4584,6 @@ class CheckedInt32ToUint32
   void PrintParams(std::ostream&) const {}
 };
 
-class CheckedIntPtrToUint32
-    : public FixedInputValueNodeT<1, CheckedIntPtrToUint32> {
-  using Base = FixedInputValueNodeT<1, CheckedIntPtrToUint32>;
-
- public:
-  explicit CheckedIntPtrToUint32(uint64_t bitfield) : Base(bitfield) {}
-
-  static constexpr OpProperties kProperties = OpProperties::Uint32() |
-                                              OpProperties::ConversionNode() |
-                                              OpProperties::EagerDeopt();
-  static constexpr
-      typename Base::InputTypes kInputTypes{ValueRepresentation::kIntPtr};
-
-  Input input() { return Node::input(0); }
-
-  void SetValueLocationConstraints();
-  void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const {}
-};
-
 class UnsafeInt32ToUint32
     : public FixedInputValueNodeT<1, UnsafeInt32ToUint32> {
   using Base = FixedInputValueNodeT<1, UnsafeInt32ToUint32>;
@@ -4635,25 +4613,6 @@ class CheckedUint32ToInt32
   static constexpr OpProperties kProperties = OpProperties::Int32() |
                                               OpProperties::ConversionNode() |
                                               OpProperties::EagerDeopt();
-  static constexpr
-      typename Base::InputTypes kInputTypes{ValueRepresentation::kUint32};
-
-  Input input() { return Node::input(0); }
-
-  void SetValueLocationConstraints();
-  void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const {}
-};
-
-class UnsafeUint32ToInt32
-    : public FixedInputValueNodeT<1, UnsafeUint32ToInt32> {
-  using Base = FixedInputValueNodeT<1, UnsafeUint32ToInt32>;
-
- public:
-  explicit UnsafeUint32ToInt32(uint64_t bitfield) : Base(bitfield) {}
-
-  static constexpr OpProperties kProperties =
-      OpProperties::Int32() | OpProperties::ConversionNode();
   static constexpr
       typename Base::InputTypes kInputTypes{ValueRepresentation::kUint32};
 
@@ -4908,26 +4867,6 @@ class Float64Round : public FixedInputValueNodeT<1, Float64Round> {
 
  private:
   Kind kind_;
-};
-
-class CheckedHoleyFloat64ToUint32
-    : public FixedInputValueNodeT<1, CheckedHoleyFloat64ToUint32> {
-  using Base = FixedInputValueNodeT<1, CheckedHoleyFloat64ToUint32>;
-
- public:
-  explicit CheckedHoleyFloat64ToUint32(uint64_t bitfield) : Base(bitfield) {}
-  static constexpr
-      typename Base::InputTypes kInputTypes{ValueRepresentation::kHoleyFloat64};
-
-  static constexpr OpProperties kProperties = OpProperties::EagerDeopt() |
-                                              OpProperties::Uint32() |
-                                              OpProperties::ConversionNode();
-
-  Input input() { return Node::input(0); }
-
-  void SetValueLocationConstraints();
-  void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const {}
 };
 
 #define DEFINE_TRUNCATE_NODE(name, from_repr, properties)        \
@@ -8386,9 +8325,11 @@ class Throw : public FixedInputNodeT<1, Throw> {
   using Base = FixedInputNodeT<1, Throw>;
 
  public:
-  static constexpr OpProperties kProperties = OpProperties::CanThrow() |
-                                              OpProperties::Call() |
-                                              OpProperties::NotIdempotent();
+  // Throw does not do a deferred call, but we mark as such because we often
+  // overwrite ThrowXXXIfYYY to Throw.
+  static constexpr OpProperties kProperties =
+      OpProperties::CanThrow() | OpProperties::Call() |
+      OpProperties::DeferredCall() | OpProperties::NotIdempotent();
 
 #define THROW_FUNCTIONS_LIST(V)          \
   V(kThrow)                              \
@@ -11427,65 +11368,6 @@ class CallBuiltin : public ValueNodeT<CallBuiltin> {
   FeedbackSlotType slot_type_ = kTaggedIndex;
 };
 
-class CallCPPBuiltin : public ValueNodeT<CallCPPBuiltin> {
-  using Base = ValueNodeT<CallCPPBuiltin>;
-  // Only 1 return value with arguments on the stack is supported.
-  static constexpr Builtin kCEntry_Builtin =
-      Builtin::kCEntry_Return1_ArgvOnStack_BuiltinExit;
-
- public:
-  static constexpr int kTargetIndex = 0;
-  static constexpr int kNewTargetIndex = 1;
-  static constexpr int kContextIndex = 2;
-  static constexpr int kFixedInputCount = 3;
-
-  CallCPPBuiltin(uint64_t bitfield, Builtin builtin, ValueNode* target,
-                 ValueNode* new_target, ValueNode* context)
-      : Base(bitfield), builtin_(builtin) {
-    DCHECK(Builtins::CallInterfaceDescriptorFor(builtin).HasContextParameter());
-    DCHECK_EQ(Builtins::CallInterfaceDescriptorFor(builtin).GetReturnCount(),
-              1);
-    set_input(kTargetIndex, target);
-    set_input(kNewTargetIndex, new_target);
-    set_input(kContextIndex, context);
-  }
-
-  // This is an overestimation, since some builtins might not call JS code.
-  static constexpr OpProperties kProperties = OpProperties::JSCall();
-
-  Builtin builtin() const { return builtin_; }
-
-  Input target() { return input(kTargetIndex); }
-  ConstInput target() const { return input(kTargetIndex); }
-  Input new_target() { return input(kNewTargetIndex); }
-  ConstInput new_target() const { return input(kNewTargetIndex); }
-  Input context() { return input(kContextIndex); }
-  ConstInput context() const { return input(kContextIndex); }
-
-  int num_args() const { return input_count() - kFixedInputCount; }
-  Input arg(int i) { return input(i + kFixedInputCount); }
-  void set_arg(int i, ValueNode* node) {
-    set_input(i + kFixedInputCount, node);
-  }
-
-  auto args() {
-    return std::views::transform(std::views::iota(0, num_args()),
-                                 [&](int i) { return arg(i); });
-  }
-
-  void VerifyInputs() const;
-#ifdef V8_COMPRESS_POINTERS
-  void MarkTaggedInputsAsDecompressing();
-#endif
-  int MaxCallStackArgs() const;
-  void SetValueLocationConstraints();
-  void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const;
-
- private:
-  Builtin builtin_;
-};
-
 class CallForwardVarargs : public ValueNodeT<CallForwardVarargs> {
   using Base = ValueNodeT<CallForwardVarargs>;
 
@@ -13106,30 +12988,6 @@ class BranchIfReferenceEqual
   void SetValueLocationConstraints();
   void GenerateCode(MaglevAssembler*, const ProcessingState&);
   void PrintParams(std::ostream&) const {}
-};
-
-class BranchIfTypeOf : public BranchControlNodeT<1, BranchIfTypeOf> {
-  using Base = BranchControlNodeT<1, BranchIfTypeOf>;
-
- public:
-  static constexpr int kValueIndex = 0;
-  Input value_input() { return NodeBase::input(kValueIndex); }
-
-  explicit BranchIfTypeOf(uint64_t bitfield,
-                          interpreter::TestTypeOfFlags::LiteralFlag literal,
-                          BasicBlockRef* if_true_refs,
-                          BasicBlockRef* if_false_refs)
-      : Base(bitfield, if_true_refs, if_false_refs), literal_(literal) {}
-
-  static constexpr
-      typename Base::InputTypes kInputTypes{ValueRepresentation::kTagged};
-
-  void SetValueLocationConstraints();
-  void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const;
-
- private:
-  interpreter::TestTypeOfFlags::LiteralFlag literal_;
 };
 
 template <typename NodeT>
