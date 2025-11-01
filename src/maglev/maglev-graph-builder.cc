@@ -256,7 +256,7 @@ class CallArguments {
       args_.insert(args_.data(), receiver);
       receiver_mode_ = ConvertReceiverMode::kAny;
     } else {
-      DCHECK(!receiver->properties().is_conversion());
+      DCHECK(!receiver->is_conversion());
       args_[0] = receiver;
     }
   }
@@ -333,7 +333,7 @@ class CallArguments {
     // Arguments can leak to the interpreter frame if the call is inlined,
     // conversions should be stored in known_node_aspects/NodeInfo.
     for (ValueNode* arg : args_) {
-      DCHECK(!arg->properties().is_conversion());
+      DCHECK(!arg->is_conversion());
     }
 #endif  // DEBUG
   }
@@ -4266,44 +4266,11 @@ ReduceResult MaglevGraphBuilder::BuildCheckMaps(
     std::optional<ValueNode*> map,
     bool has_deprecated_map_without_migration_target,
     bool migration_done_outside) {
-  // TODO(verwaest): Support other objects with possible known stable maps as
-  // well.
-  RETURN_IF_DONE(reducer_.TryFoldCheckMaps(object, maps));
+  KnownMapsMerger<base::Vector<const compiler::MapRef>> merger(broker(), zone(),
+                                                               maps);
+  RETURN_IF_DONE(reducer_.TryFoldCheckMaps(object, nullptr, maps, merger));
 
   NodeInfo* known_info = GetOrCreateInfoFor(object);
-
-  // Calculates if known maps are a subset of maps, their map intersection and
-  // whether we should emit check with migration.
-  KnownMapsMerger merger(broker(), zone(), maps);
-  merger.IntersectWithKnownNodeAspects(object, known_node_aspects());
-
-  if (IsEmptyNodeType(IntersectType(merger.node_type(), GetType(object)))) {
-    return EmitUnconditionalDeopt(DeoptimizeReason::kWrongMap);
-  }
-  // If the known maps are the subset of the maps to check, we are done.
-  if (merger.known_maps_are_subset_of_requested_maps()) {
-    // The node type of known_info can get out of sync with the possible maps.
-    // For instance after merging with an effectively dead branch (i.e., check
-    // contradicting all possible maps).
-    // TODO(olivf) Try to combine node_info and possible maps and ensure that
-    // narrowing the type also clears impossible possible_maps.
-    if (!NodeTypeIs(known_info->type(), merger.node_type())) {
-      known_info->UnionType(merger.node_type());
-    }
-#ifdef DEBUG
-    // Double check that, for every possible map, it's one of the maps we'd
-    // want to check.
-    for (compiler::MapRef possible_map :
-         known_node_aspects().TryGetInfoFor(object)->possible_maps()) {
-      DCHECK_NE(std::find(maps.begin(), maps.end(), possible_map), maps.end());
-    }
-#endif
-    return ReduceResult::Done();
-  }
-
-  if (merger.intersect_set().is_empty()) {
-    return EmitUnconditionalDeopt(DeoptimizeReason::kWrongMap);
-  }
 
   // TODO(v8:7700): Check if the {maps} - {known_maps} size is smaller than
   // {maps} \intersect {known_maps}, we can emit CheckNotMaps instead.
@@ -4366,7 +4333,8 @@ ReduceResult MaglevGraphBuilder::BuildCompareMaps(
     std::optional<MaglevSubGraphBuilder::Label>& if_not_matched,
     std::optional<int> future_bind_offset) {
   GetOrCreateInfoFor(object);
-  KnownMapsMerger merger(broker(), zone(), maps);
+  KnownMapsMerger<base::Vector<const compiler::MapRef>> merger(broker(), zone(),
+                                                               maps);
   merger.IntersectWithKnownNodeAspects(object, known_node_aspects());
 
   if (merger.intersect_set().is_empty()) {
@@ -4489,7 +4457,7 @@ bool MaglevGraphBuilder::CanElideWriteBarrier(ValueNode* object,
   // a Smi when tagged.
   NodeInfo* node_info = GetOrCreateInfoFor(value);
   if (ValueNode* tagged_alt = node_info->alternative().tagged()) {
-    DCHECK(tagged_alt->properties().is_conversion());
+    DCHECK(tagged_alt->is_conversion());
     return CheckType(tagged_alt, NodeType::kSmi);
   }
   return false;
@@ -4745,7 +4713,7 @@ ReduceResult MaglevGraphBuilder::BuildStoreTaggedField(
   // Initializing values are tagged before allocation, since conversion nodes
   // may allocate, and are not used to set a VO.
   DCHECK_IMPLIES(store_mode != StoreTaggedMode::kInitializing,
-                 !value->properties().is_conversion());
+                 !value->is_conversion());
   // TODO(marja): Bail out if `value` has the empty type.
   if (store_mode != StoreTaggedMode::kInitializing) {
     TryBuildStoreTaggedFieldToAllocation(object, value, offset);
@@ -4778,7 +4746,7 @@ ReduceResult MaglevGraphBuilder::BuildStoreTaggedFieldNoWriteBarrier(
   // Initializing values are tagged before allocation, since conversion nodes
   // may allocate, and are not used to set a VO.
   DCHECK_IMPLIES(store_mode != StoreTaggedMode::kInitializing,
-                 !value->properties().is_conversion());
+                 !value->is_conversion());
   DCHECK(CanElideWriteBarrier(object, value));
   if (store_mode != StoreTaggedMode::kInitializing) {
     TryBuildStoreTaggedFieldToAllocation(object, value, offset);
@@ -5532,7 +5500,8 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildNamedAccess(
   } else {
     // TODO(leszeks): This is doing duplicate work with BuildCheckMaps,
     // consider passing the merger into there.
-    KnownMapsMerger merger(broker(), zone(), base::VectorOf(feedback.maps()));
+    KnownMapsMerger<ZoneVector<compiler::MapRef>> merger(broker(), zone(),
+                                                         feedback.maps());
     merger.IntersectWithKnownNodeAspects(lookup_start_object,
                                          known_node_aspects());
     inferred_maps = merger.intersect_set();
@@ -6663,7 +6632,8 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildPolymorphicPropertyAccess(
       if (map.IsHeapNumberMap()) {
         GetOrCreateInfoFor(lookup_start_object);
         base::SmallVector<compiler::MapRef, 1> known_maps = {map};
-        KnownMapsMerger merger(broker(), zone(), base::VectorOf(known_maps));
+        KnownMapsMerger<base::SmallVector<compiler::MapRef, 1>> merger(
+            broker(), zone(), known_maps);
         merger.IntersectWithKnownNodeAspects(lookup_start_object,
                                              known_node_aspects());
         if (!merger.intersect_set().is_empty() &&
@@ -7115,7 +7085,7 @@ void MaglevGraphBuilder::RecordKnownProperty(ValueNode* lookup_start_object,
                                              PropertyKey key, ValueNode* value,
                                              bool is_const,
                                              compiler::AccessMode access_mode) {
-  DCHECK(!value->properties().is_conversion());
+  DCHECK(!value->is_conversion());
   auto& props_for_key =
       known_node_aspects().GetLoadedPropertiesForKey(zone(), is_const, key);
   if (!is_const && IsAnyStore(access_mode)) {
@@ -8289,9 +8259,7 @@ bool MaglevGraphBuilder::ShouldEagerInlineCall(
 
 MaybeReduceResult MaglevGraphBuilder::TryBuildInlineCall(
     ValueNode* context, ValueNode* function, ValueNode* new_target,
-#ifdef V8_ENABLE_LEAPTIERING
     JSDispatchHandle dispatch_handle,
-#endif
     compiler::SharedFunctionInfoRef shared,
     compiler::FeedbackCellRef feedback_cell, CallArguments& args,
     const compiler::FeedbackSource& feedback_source) {
@@ -8308,6 +8276,10 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildInlineCall(
         broker()->GetFeedbackForCall(feedback_source);
     feedback_frequency =
         feedback.IsInsufficient() ? 0.0f : feedback.AsCall().frequency();
+  } else if (IsAccessorFunction(shared.kind()) && is_turbolev()) {
+    // Accessors don't have feedback since there's no CallIC. This allows
+    // inlining them in turbolev.
+    feedback_frequency = 1.0f;
   }
   float call_frequency = feedback_frequency * GetCurrentCallFrequency();
 
@@ -8368,9 +8340,7 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildInlineCall(
   CallKnownJSFunction* generic_call;
   GET_VALUE_OR_ABORT(generic_call,
                      BuildCallKnownJSFunction(context, function, new_target,
-#ifdef V8_ENABLE_LEAPTIERING
                                               dispatch_handle,
-#endif
                                               shared, arguments));
 
   // Note: We point to the generic call exception handler instead of
@@ -9235,6 +9205,10 @@ MaybeReduceResult MaglevGraphBuilder::TryReduceArrayPrototypeSlice(
   }
 
   if (!end->IsUndefinedValue()) {
+    return {};
+  }
+
+  if (!CheckType(receiver, NodeType::kJSReceiver)) {
     return {};
   }
 
@@ -10804,7 +10778,7 @@ MaybeReduceResult MaglevGraphBuilder::DoTryReduceMathRound(
   // calling UncheckedNumberToFloat64 manually.
   ValueNode* float64_value;
   GET_VALUE_OR_ABORT(float64_value,
-                     AddNewNode<UncheckedNumberToFloat64>({conversion}));
+                     AddNewNode<UnsafeNumberToFloat64>({conversion}));
   return AddNewNode<Float64Round>({float64_value}, kind);
 }
 
@@ -10922,10 +10896,10 @@ MaybeReduceResult MaglevGraphBuilder::TryReduceMathClz32(
   GET_VALUE_OR_ABORT(conversion, AddNewNode<ToNumberOrNumeric>(
                                      {arg}, Object::Conversion::kToNumber));
   // TODO(victorgomes): rely on automatic input conversion here rather than
-  // calling UncheckedNumberToFloat64 manually.
+  // calling UnsafeNumberToFloat64 manually.
   ValueNode* float64_value;
   GET_VALUE_OR_ABORT(float64_value,
-                     AddNewNode<UncheckedNumberToFloat64>({conversion}));
+                     AddNewNode<UnsafeNumberToFloat64>({conversion}));
   return AddNewNode<Float64CountLeadingZeros>({float64_value});
 }
 
@@ -11293,9 +11267,7 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildCallKnownJSFunction(
   } else {
     res = TryBuildCallKnownJSFunction(
         context_node, closure, new_target,
-#ifdef V8_ENABLE_LEAPTIERING
         function.dispatch_handle(),
-#endif
         shared, function.raw_feedback_cell(broker()), args, feedback_source);
   }
   return res;
@@ -11303,9 +11275,7 @@ MaybeReduceResult MaglevGraphBuilder::TryBuildCallKnownJSFunction(
 
 ReduceResult MaglevGraphBuilder::BuildCallKnownJSFunction(
     ValueNode* context, ValueNode* function, ValueNode* new_target,
-#ifdef V8_ENABLE_LEAPTIERING
     JSDispatchHandle dispatch_handle,
-#endif
     compiler::SharedFunctionInfoRef shared,
     compiler::FeedbackCellRef feedback_cell, CallArguments& args,
     const compiler::FeedbackSource& feedback_source) {
@@ -11320,18 +11290,14 @@ ReduceResult MaglevGraphBuilder::BuildCallKnownJSFunction(
         }
         return ReduceResult::Done();
       },
-#ifdef V8_ENABLE_LEAPTIERING
       dispatch_handle,
-#endif
       shared, GetTaggedValue(function), GetTaggedValue(context),
       GetTaggedValue(receiver), GetTaggedValue(new_target), feedback_source);
 }
 
 ReduceResult MaglevGraphBuilder::BuildCallKnownJSFunction(
     ValueNode* context, ValueNode* function, ValueNode* new_target,
-#ifdef V8_ENABLE_LEAPTIERING
     JSDispatchHandle dispatch_handle,
-#endif
     compiler::SharedFunctionInfoRef shared,
     base::Vector<ValueNode*> arguments) {
   DCHECK_GT(arguments.size(), 0);
@@ -11348,9 +11314,7 @@ ReduceResult MaglevGraphBuilder::BuildCallKnownJSFunction(
         }
         return ReduceResult::Done();
       },
-#ifdef V8_ENABLE_LEAPTIERING
       dispatch_handle,
-#endif
       shared, GetTaggedValue(function), GetTaggedValue(context),
       GetTaggedValue(arguments[0]), GetTaggedValue(new_target),
       compiler::FeedbackSource{});
@@ -11358,40 +11322,28 @@ ReduceResult MaglevGraphBuilder::BuildCallKnownJSFunction(
 
 MaybeReduceResult MaglevGraphBuilder::TryBuildCallKnownJSFunction(
     ValueNode* context, ValueNode* function, ValueNode* new_target,
-#ifdef V8_ENABLE_LEAPTIERING
     JSDispatchHandle dispatch_handle,
-#endif
     compiler::SharedFunctionInfoRef shared,
     compiler::FeedbackCellRef feedback_cell, CallArguments& args,
     const compiler::FeedbackSource& feedback_source) {
   // Truncate args when they are unreachable.
   if (args.mode() == CallArguments::kDefault &&
       shared.object()->CanOnlyAccessFixedFormalParameters()) {
-#ifdef V8_ENABLE_LEAPTIERING
     auto parameter_count =
         IsolateGroup::current()->js_dispatch_table()->GetParameterCount(
             dispatch_handle);
-#else
-    auto parameter_count =
-        shared_function_info
-            .internal_formal_parameter_count_with_receiver_deprecated();
-#endif
     if (args.count() > parameter_count - kJSArgcReceiverSlots) {
       args.ResizeDefaultArguments(parameter_count - kJSArgcReceiverSlots);
     }
   }
   if (v8_flags.maglev_inlining) {
     RETURN_IF_DONE(TryBuildInlineCall(context, function, new_target,
-#ifdef V8_ENABLE_LEAPTIERING
                                       dispatch_handle,
-#endif
                                       shared, feedback_cell, args,
                                       feedback_source));
   }
   return BuildCallKnownJSFunction(context, function, new_target,
-#ifdef V8_ENABLE_LEAPTIERING
                                   dispatch_handle,
-#endif
                                   shared, feedback_cell, args, feedback_source);
 }
 
@@ -11609,9 +11561,7 @@ MaybeReduceResult MaglevGraphBuilder::TryReduceCallForTarget(
 
 MaybeReduceResult MaglevGraphBuilder::TryReduceCallForNewClosure(
     ValueNode* target_node, ValueNode* target_context,
-#ifdef V8_ENABLE_LEAPTIERING
     JSDispatchHandle dispatch_handle,
-#endif
     compiler::SharedFunctionInfoRef shared,
     compiler::FeedbackCellRef feedback_cell, CallArguments& args,
     const compiler::FeedbackSource& feedback_source) {
@@ -11629,9 +11579,7 @@ MaybeReduceResult MaglevGraphBuilder::TryReduceCallForNewClosure(
     RETURN_IF_DONE(TryBuildCallKnownJSFunction(
         target_context, target_node,
         GetRootConstant(RootIndex::kUndefinedValue),
-#ifdef V8_ENABLE_LEAPTIERING
         dispatch_handle,
-#endif
         shared, feedback_cell, args, feedback_source));
   }
   return BuildGenericCall(target_node, Call::TargetType::kJSFunction, args);
@@ -11744,9 +11692,7 @@ ReduceResult MaglevGraphBuilder::BuildCallWithFeedback(
             TryBuildCallKnownJSFunction(
                 context, target_node,
                 GetRootConstant(RootIndex::kUndefinedValue),
-#ifdef V8_ENABLE_LEAPTIERING
                 feedback_cell.dispatch_handle(),
-#endif
                 shared.value(), feedback_cell, args, feedback_source),
             SetAccumulator);
         UNREACHABLE();
@@ -11915,9 +11861,7 @@ ReduceResult MaglevGraphBuilder::ReduceCall(
           target_node->TryCast<FastCreateClosure>()) {
     MaybeReduceResult result = TryReduceCallForNewClosure(
         fast_create_closure, fast_create_closure->context().node(),
-#ifdef V8_ENABLE_LEAPTIERING
         fast_create_closure->feedback_cell().dispatch_handle(),
-#endif
         fast_create_closure->shared_function_info(),
         fast_create_closure->feedback_cell(), args, feedback_source);
     RETURN_IF_DONE(result);
@@ -11925,9 +11869,7 @@ ReduceResult MaglevGraphBuilder::ReduceCall(
                  target_node->TryCast<CreateClosure>()) {
     MaybeReduceResult result = TryReduceCallForNewClosure(
         create_closure, create_closure->context().node(),
-#ifdef V8_ENABLE_LEAPTIERING
         create_closure->feedback_cell().dispatch_handle(),
-#endif
         create_closure->shared_function_info(), create_closure->feedback_cell(),
         args, feedback_source);
     RETURN_IF_DONE(result);
@@ -16748,7 +16690,7 @@ ReduceResult MaglevGraphBuilder::GetSilencedNaN(ValueNode* value) {
 
   // We only need to check for silenced NaN in non-conversion nodes or
   // conversion from tagged, since they can't be signalling NaNs.
-  if (value->properties().is_conversion()) {
+  if (value->is_conversion()) {
     // A conversion node should have at least one input.
     DCHECK_GE(value->input_count(), 1);
     // If the conversion node is tagged, we could be reading a fabricated sNaN

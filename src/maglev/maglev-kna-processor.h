@@ -262,9 +262,8 @@ class RecomputeKnownNodeAspectsProcessor {
   // NumberOrOddball for CheckedNumberOrOddballToFloat64.
   PROCESS_SAFE_CONV(CheckedNumberOrOddballToFloat64, float64, NumberOrOddball)
   PROCESS_SAFE_CONV(CheckedNumberToFloat64, float64, Number)
-  PROCESS_UNSAFE_CONV(UncheckedNumberOrOddballToFloat64, float64,
-                      NumberOrOddball)
-  PROCESS_UNSAFE_CONV(UncheckedNumberToFloat64, float64, Number)
+  PROCESS_UNSAFE_CONV(UnsafeNumberOrOddballToFloat64, float64, NumberOrOddball)
+  PROCESS_UNSAFE_CONV(UnsafeNumberToFloat64, float64, Number)
   PROCESS_SAFE_CONV(CheckedHoleyFloat64ToFloat64, float64, Number)
   PROCESS_UNSAFE_CONV(HoleyFloat64ToMaybeNanFloat64, float64, Number)
   PROCESS_SAFE_CONV(ChangeInt32ToFloat64, float64, Number)
@@ -366,6 +365,32 @@ class RecomputeKnownNodeAspectsProcessor {
   ProcessResult ProcessNode(StoreFloat64ContextCell* node) {
     ProcessStoreContextSlot(graph_->GetConstant(node->context()),
                             node->value_input().node(), node->slot_offset());
+    return ProcessResult::kContinue;
+  }
+
+  void UpdateMaps(ValueNode* object, const compiler::ZoneRefSet<Map>& maps) {
+    KnownMapsMerger<compiler::ZoneRefSet<Map>> merger(broker(), zone(), maps);
+    merger.IntersectWithKnownNodeAspects(object, known_node_aspects());
+    merger.UpdateKnownNodeAspects(object, known_node_aspects());
+  }
+
+  ProcessResult ProcessNode(CheckMaps* node) {
+    UpdateMaps(node->receiver_input().node(), node->maps());
+    return ProcessResult::kContinue;
+  }
+
+  ProcessResult ProcessNode(CheckMapsWithMigration* node) {
+    UpdateMaps(node->receiver_input().node(), node->maps());
+    return ProcessResult::kContinue;
+  }
+
+  ProcessResult ProcessNode(CheckMapsWithMigrationAndDeopt* node) {
+    UpdateMaps(node->receiver_input().node(), node->maps());
+    return ProcessResult::kContinue;
+  }
+
+  ProcessResult ProcessNode(CheckMapsWithAlreadyLoadedMap* node) {
+    UpdateMaps(node->object_input().node(), node->maps());
     return ProcessResult::kContinue;
   }
 

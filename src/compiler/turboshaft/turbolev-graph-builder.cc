@@ -754,7 +754,11 @@ class GraphBuildingNodeProcessor {
   void StartSinglePredecessorExceptionBlock(
       maglev::BasicBlock* maglev_catch_handler,
       Block* turboshaft_catch_handler) {
-    if (!__ Bind(turboshaft_catch_handler)) return;
+    // Binding the catch handler should always succeed since
+    // StartExceptionBlock should have already bailed out if the current block
+    // isn't reachable (which is the only reason for which a Bind could fail).
+    __ BindReachable(turboshaft_catch_handler);
+
     catch_block_begin_ = __ CatchBlockBegin();
     if (!maglev_catch_handler->has_phi()) return;
     InsertTaggingForPhis(maglev_catch_handler);
@@ -810,7 +814,12 @@ class GraphBuildingNodeProcessor {
     if (!maglev_catch_handler->has_phi()) {
       // The very simple case: the catch handler didn't have any Phis, we don't
       // have to do anything complex.
-      if (!__ Bind(turboshaft_catch_handler)) return;
+
+      // Binding the catch handler should always succeed since
+      // StartExceptionBlock should have already bailed out if the current block
+      // isn't reachable (which is the only reason for which a Bind could fail).
+      __ BindReachable(turboshaft_catch_handler);
+
       catch_block_begin_ = __ CatchBlockBegin();
       return;
     }
@@ -829,8 +838,9 @@ class GraphBuildingNodeProcessor {
                                     turboshaft_catch_handler);
     }
 
-    // Finally binding the catch handler.
-    __ Bind(turboshaft_catch_handler);
+    // Finally binding the catch handler (should always succeeds since
+    // StartExceptionBlock bails out if the catch handler isn't reachable).
+    __ BindReachable(turboshaft_catch_handler);
 
     // We now need to insert a Phi for the CatchBlockBegins of the
     // predecessors (usually, we would just call `__ CatchBlockbegin`, which
@@ -4690,7 +4700,7 @@ class GraphBuildingNodeProcessor {
             node->eager_deopt_info()->feedback_to_update()));
     return maglev::ProcessResult::kContinue;
   }
-  maglev::ProcessResult Process(maglev::UncheckedNumberToFloat64* node,
+  maglev::ProcessResult Process(maglev::UnsafeNumberToFloat64* node,
                                 const maglev::ProcessingState& state) {
     // `node->conversion_type()` doesn't matter here, since for both HeapNumbers
     // and Oddballs, the Float64 value is at the same index (and this node never
@@ -4702,7 +4712,7 @@ class GraphBuildingNodeProcessor {
                          kNumberOrOddball));
     return maglev::ProcessResult::kContinue;
   }
-  maglev::ProcessResult Process(maglev::UncheckedNumberOrOddballToFloat64* node,
+  maglev::ProcessResult Process(maglev::UnsafeNumberOrOddballToFloat64* node,
                                 const maglev::ProcessingState& state) {
     // `node->conversion_type()` doesn't matter here, since for both HeapNumbers
     // and Oddballs, the Float64 value is at the same index (and this node never
@@ -4868,7 +4878,7 @@ class GraphBuildingNodeProcessor {
     SetMap(node, __ Float64SilenceNaN(Map(node->input())));
     return maglev::ProcessResult::kContinue;
   }
-  maglev::ProcessResult Process(maglev::Float64ToHoleyFloat64* node,
+  maglev::ProcessResult Process(maglev::ChangeFloat64ToHoleyFloat64* node,
                                 const maglev::ProcessingState& state) {
     SetMap(node, __ Float64SilenceNaN(Map(node->input())));
     return maglev::ProcessResult::kContinue;
