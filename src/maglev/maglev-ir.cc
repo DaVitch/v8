@@ -146,6 +146,8 @@ std::ostream& operator<<(std::ostream& os, UseRepresentation repr) {
       return os << "TruncatedInt32";
     case UseRepresentation::kUint32:
       return os << "Uint32";
+    case UseRepresentation::kShiftedInt53:
+      return os << "ShiftedInt53";
     case UseRepresentation::kFloat64:
       return os << "Float64";
     case UseRepresentation::kHoleyFloat64:
@@ -270,6 +272,9 @@ void PrintResult(std::ostream& os, const ValueNode* node,
         os << ", can truncate to int32 " << node->GetRange();
       } else {
         os << ", cannot truncate to int32";
+        if (node->is_float64_or_holey_float64()) {
+          os << " " << node->GetRange();
+        }
       }
     }
   }
@@ -381,9 +386,7 @@ void DeoptInfo::InitializeInputLocations(Zone* zone, size_t count) {
   for (size_t i = 0; i < count; ++i) {
     new (&input_locations_[i]) InputLocation();
   }
-#ifdef DEBUG
   input_location_count_ = count;
-#endif  // DEBUG
 }
 
 bool RootConstant::ToBoolean(LocalIsolate* local_isolate) const {
@@ -557,6 +560,7 @@ NodeType ValueNode::GetStaticType(compiler::JSHeapBroker* broker) {
     case ValueRepresentation::kUint32:
     case ValueRepresentation::kFloat64:
     case ValueRepresentation::kIntPtr:
+    case ValueRepresentation::kShiftedInt53:
       return NodeType::kNumber;
     case ValueRepresentation::kHoleyFloat64:
       return NodeType::kNumberOrOddball;
@@ -668,6 +672,7 @@ void Phi::VerifyInputs() const {
     CASE_REPR(Tagged)
     CASE_REPR(Int32)
     CASE_REPR(Uint32)
+    CASE_REPR(ShiftedInt53)
     CASE_REPR(Float64)
     CASE_REPR(HoleyFloat64)
 #undef CASE_REPR
@@ -960,6 +965,11 @@ DirectHandle<Object> Uint32Constant::DoReify(LocalIsolate* isolate) const {
   return isolate->factory()->NewNumberFromUint<AllocationType::kOld>(value());
 }
 
+DirectHandle<Object> ShiftedInt53Constant::DoReify(
+    LocalIsolate* isolate) const {
+  UNREACHABLE();
+}
+
 DirectHandle<Object> IntPtrConstant::DoReify(LocalIsolate* isolate) const {
   return isolate->factory()->NewNumberFromInt64<AllocationType::kOld>(value());
 }
@@ -1075,6 +1085,11 @@ void Uint32Constant::DoLoadToRegister(MaglevAssembler* masm,
   __ Move(reg, value());
 }
 
+void ShiftedInt53Constant::DoLoadToRegister(MaglevAssembler* masm,
+                                            Register reg) const {
+  UNREACHABLE();
+}
+
 void IntPtrConstant::DoLoadToRegister(MaglevAssembler* masm,
                                       Register reg) const {
   __ Move(reg, value());
@@ -1110,6 +1125,20 @@ void TrustedConstant::DoLoadToRegister(MaglevAssembler* masm,
 
 TURBOLEV_VALUE_NODE_LIST(TURBOLEV_UNREACHABLE_NODE)
 TURBOLEV_NON_VALUE_NODE_LIST(TURBOLEV_UNREACHABLE_NODE)
+
+TURBOLEV_UNREACHABLE_NODE(CheckedShiftedInt53ToInt32)
+TURBOLEV_UNREACHABLE_NODE(CheckedShiftedInt53ToUint32)
+TURBOLEV_UNREACHABLE_NODE(CheckedIntPtrToShiftedInt53)
+TURBOLEV_UNREACHABLE_NODE(CheckedHoleyFloat64ToShiftedInt53)
+TURBOLEV_UNREACHABLE_NODE(UnsafeSmiTagShiftedInt53)
+TURBOLEV_UNREACHABLE_NODE(CheckedNumberToShiftedInt53)
+TURBOLEV_UNREACHABLE_NODE(CheckedSmiTagShiftedInt53)
+TURBOLEV_UNREACHABLE_NODE(ShiftedInt53ToNumber)
+TURBOLEV_UNREACHABLE_NODE(ChangeInt32ToShiftedInt53)
+TURBOLEV_UNREACHABLE_NODE(ChangeUint32ToShiftedInt53)
+TURBOLEV_UNREACHABLE_NODE(ChangeShiftedInt53ToFloat64)
+TURBOLEV_UNREACHABLE_NODE(ShiftedInt53ToBoolean)
+
 #undef TURBOLEV_UNREACHABLE_NODE
 
 void SmiConstant::SetValueLocationConstraints() { DefineAsConstant(this); }
@@ -1129,6 +1158,12 @@ void Int32Constant::GenerateCode(MaglevAssembler* masm,
 void Uint32Constant::SetValueLocationConstraints() { DefineAsConstant(this); }
 void Uint32Constant::GenerateCode(MaglevAssembler* masm,
                                   const ProcessingState& state) {}
+
+void ShiftedInt53Constant::SetValueLocationConstraints() { UNREACHABLE(); }
+void ShiftedInt53Constant::GenerateCode(MaglevAssembler* masm,
+                                        const ProcessingState& state) {
+  UNREACHABLE();
+}
 
 void IntPtrConstant::SetValueLocationConstraints() { DefineAsConstant(this); }
 void IntPtrConstant::GenerateCode(MaglevAssembler* masm,
@@ -1499,20 +1534,12 @@ void GapMove::GenerateCode(MaglevAssembler* masm,
   MachineRepresentation repr = source().representation();
   if (source().IsRegister()) {
     Register source_reg = ToRegister(source());
-    if (target().IsAnyRegister()) {
-      DCHECK(target().IsRegister());
-      __ MoveRepr(repr, ToRegister(target()), source_reg);
-    } else {
-      __ MoveRepr(repr, masm->ToMemOperand(target()), source_reg);
-    }
+    CHECK(target().IsRegister());
+    __ MoveRepr(repr, ToRegister(target()), source_reg);
   } else if (source().IsDoubleRegister()) {
     DoubleRegister source_reg = ToDoubleRegister(source());
-    if (target().IsAnyRegister()) {
-      DCHECK(target().IsDoubleRegister());
-      __ Move(ToDoubleRegister(target()), source_reg);
-    } else {
-      __ StoreFloat64(masm->ToMemOperand(target()), source_reg);
-    }
+    CHECK(target().IsDoubleRegister());
+    __ Move(ToDoubleRegister(target()), source_reg);
   } else {
     DCHECK(source().IsAnyStackSlot());
     MemOperand source_op = masm->ToMemOperand(source());
@@ -2325,15 +2352,14 @@ void CheckMapsWithAlreadyLoadedMap::SetValueLocationConstraints() {
 
 void CheckMapsWithAlreadyLoadedMap::GenerateCode(MaglevAssembler* masm,
                                                  const ProcessingState& state) {
+  Register object = ToRegister(map_input());
   Register map = ToRegister(map_input());
 
   // We emit an unconditional deopt if we intersect the map sets and the
   // intersection is empty.
   DCHECK(!maps().is_empty());
 
-  // CheckMapsWithAlreadyLoadedMap can only be used in contexts where SMIs /
-  // HeapNumbers don't make sense (e.g., if we're loading properties from them).
-  DCHECK(!compiler::AnyMapIsHeapNumber(maps()));
+  bool maps_include_heap_number = compiler::AnyMapIsHeapNumber(maps());
 
   // Experimentally figured out map limit (with slack) which allows us to use
   // near jumps in the code below. If --deopt-every-n-times is on, we generate
@@ -2345,6 +2371,17 @@ void CheckMapsWithAlreadyLoadedMap::GenerateCode(MaglevAssembler* masm,
                                       : Label::Distance::kFar;
 
   Label done;
+  if (check_type() == CheckType::kOmitHeapObjectCheck) {
+    __ AssertNotSmi(object);
+  } else {
+    if (maps_include_heap_number) {
+      // Smis count as matching the HeapNumber map, so we're done.
+      __ JumpIfSmi(object, &done, jump_distance);
+    } else {
+      __ EmitEagerDeoptIfSmi(this, object, DeoptimizeReason::kWrongMap);
+    }
+  }
+
   size_t map_count = maps().size();
   for (size_t i = 0; i < map_count - 1; ++i) {
     Handle<Map> map_at_i = maps().at(i).object();
@@ -3769,46 +3806,40 @@ void StoreContextSlotWithWriteBarrier::GenerateCode(
 }
 
 void StoreSmiContextCell::SetValueLocationConstraints() {
+  UseRegister(cell_input());
   UseRegister(value_input());
-  set_temporaries_needed(1);
 }
 void StoreSmiContextCell::GenerateCode(MaglevAssembler* masm,
                                        const ProcessingState& state) {
-  MaglevAssembler::TemporaryRegisterScope temps(masm);
-  Register object = temps.Acquire();
+  Register cell = ToRegister(cell_input());
   Register value = ToRegister(value_input());
 
-  __ Move(object, context_cell_.object());
-  __ StoreTaggedFieldNoWriteBarrier(object, offset(), value);
-  __ AssertElidedWriteBarrier(object, value, register_snapshot());
+  __ StoreTaggedFieldNoWriteBarrier(cell, offset(), value);
+  __ AssertElidedWriteBarrier(cell, value, register_snapshot());
 }
 
 void StoreInt32ContextCell::SetValueLocationConstraints() {
+  UseRegister(cell_input());
   UseRegister(value_input());
-  set_temporaries_needed(1);
 }
 void StoreInt32ContextCell::GenerateCode(MaglevAssembler* masm,
                                          const ProcessingState& state) {
-  MaglevAssembler::TemporaryRegisterScope temps(masm);
-  Register object = temps.Acquire();
+  Register cell = ToRegister(cell_input());
   Register value = ToRegister(value_input());
 
-  __ Move(object, context_cell_.object());
-  __ StoreInt32(FieldMemOperand(object, offset()), value);
+  __ StoreInt32(FieldMemOperand(cell, offset()), value);
 }
 
 void StoreFloat64ContextCell::SetValueLocationConstraints() {
+  UseRegister(cell_input());
   UseRegister(value_input());
-  set_temporaries_needed(1);
 }
 void StoreFloat64ContextCell::GenerateCode(MaglevAssembler* masm,
                                            const ProcessingState& state) {
-  MaglevAssembler::TemporaryRegisterScope temps(masm);
-  Register object = temps.Acquire();
+  Register cell = ToRegister(cell_input());
   DoubleRegister value = ToDoubleRegister(value_input());
 
-  __ Move(object, context_cell_.object());
-  __ StoreFloat64(FieldMemOperand(object, offset()), value);
+  __ StoreFloat64(FieldMemOperand(cell, offset()), value);
 }
 
 void CheckString::SetValueLocationConstraints() {
@@ -7791,6 +7822,10 @@ void Uint32Constant::PrintParams(std::ostream& os) const {
   os << "(" << value() << ")";
 }
 
+void ShiftedInt53Constant::PrintParams(std::ostream& os) const {
+  os << "(" << value() << ")";
+}
+
 void IntPtrConstant::PrintParams(std::ostream& os) const {
   os << "(" << value() << ")";
 }
@@ -8003,18 +8038,6 @@ void StoreContextSlotWithWriteBarrier::PrintParams(std::ostream& os) const {
   os << "(" << index_ << ")";
 }
 
-void StoreSmiContextCell::PrintParams(std::ostream& os) const {
-  os << "(" << context_cell_.object() << ")";
-}
-
-void StoreInt32ContextCell::PrintParams(std::ostream& os) const {
-  os << "(" << context_cell_.object() << ")";
-}
-
-void StoreFloat64ContextCell::PrintParams(std::ostream& os) const {
-  os << "(" << context_cell_.object() << ")";
-}
-
 void CheckedNumberOrOddballToFloat64::PrintParams(std::ostream& os) const {
   os << "(" << conversion_type() << ")";
 }
@@ -8169,6 +8192,12 @@ void Int32Compare::PrintParams(std::ostream& os) const {
 }
 
 void Int32ToBoolean::PrintParams(std::ostream& os) const {
+  if (flip()) {
+    os << "(flipped)";
+  }
+}
+
+void ShiftedInt53ToBoolean::PrintParams(std::ostream& os) const {
   if (flip()) {
     os << "(flipped)";
   }

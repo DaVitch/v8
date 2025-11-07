@@ -61,6 +61,7 @@
 #include "src/objects/swiss-name-dictionary.h"
 #include "src/objects/tagged.h"
 #include "src/objects/turbofan-types.h"
+#include "src/utils/utils.h"
 
 #ifdef V8_ENABLE_WEBASSEMBLY
 #include "src/wasm/wasm-objects.h"
@@ -2325,6 +2326,7 @@ class TurboshaftAssemblerOpInterface
   CONVERT_PRIMITIVE_TO_OBJECT(ConvertInt32ToNumber, Number, Word32, Signed)
   CONVERT_PRIMITIVE_TO_OBJECT(ConvertUint32ToNumber, Number, Word32, Unsigned)
   CONVERT_PRIMITIVE_TO_OBJECT(ConvertIntPtrToNumber, Number, WordPtr, Signed)
+  CONVERT_PRIMITIVE_TO_OBJECT(ConvertInt64ToNumber, Number, Word64, Signed)
   CONVERT_PRIMITIVE_TO_OBJECT(ConvertWord32ToBoolean, Boolean, Word32, Signed)
   CONVERT_PRIMITIVE_TO_OBJECT(ConvertCharCodeToString, String, Word32, CharCode)
 #undef CONVERT_PRIMITIVE_TO_OBJECT
@@ -2715,6 +2717,16 @@ class TurboshaftAssemblerOpInterface
     } else {
       return ChangeUint32ToUint64(input);
     }
+  }
+
+  V<Word64> ChangeShiftedInt53ToInt64(V<Word64> input) {
+    DCHECK(Is64());
+    return Word64ShiftRightArithmetic(input, 11);
+  }
+
+  V<Word64> TruncateInt64ToShiftedInt53(V<Word64> input) {
+    DCHECK(Is64());
+    return Word64ShiftLeft(input, 11);
   }
 
   V<Word32> IsSmi(V<Object> object) {
@@ -5593,10 +5605,6 @@ class Assembler : public AssemblerData,
 #ifdef DEBUG
   int& intermediate_tracing_depth() { return intermediate_tracing_depth_; }
 #endif
-
-  IsSmiDecision DecideObjectIsSmi(V<Object> og_index) {
-    return turboshaft::DecideObjectIsSmi(__ output_graph(), og_index);
-  }
 
   // ReduceProjection eliminates projections to tuples and returns the
   // corresponding tuple input instead. We do this at the top of the stack to

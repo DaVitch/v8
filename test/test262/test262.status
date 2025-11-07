@@ -263,23 +263,19 @@
   # there are only 16 tests. Skip for now.
   'staging/sm/Temporal/*': [SKIP],
 
-  # Fixed upstream
-
-  # Issue filed upstream
-
-  # Float casting to integer (https://github.com/boa-dev/temporal/issues/189, https://github.com/boa-dev/temporal/issues/334)
+  # Duration internal representation (https://github.com/boa-dev/temporal/issues/613/334)
   'built-ins/Temporal/Duration/prototype/total/precision-exact-mathematical-values-6': [FAIL],
   'built-ins/Temporal/Duration/prototype/total/precision-exact-mathematical-values-7': [FAIL],
-
-  # No issue filed
-
-  # ICU4C and ICU4X disagree on canonical timezones
-  'intl402/Temporal/ZonedDateTime/prototype/equals/canonical-not-equal': [FAIL],
 
   # Test errors for out-of-ground-truth-range calendars (expected, test is broken: https://github.com/tc39/test262/issues/4614)
   'staging/Intl402/Temporal/old/non-iso-calendars-chinese': [FAIL],
   'staging/Intl402/Temporal/old/non-iso-calendars-dangi': [FAIL],
   'intl402/Temporal/PlainYearMonth/from/reference-day-chinese': [FAIL],
+
+  # Intl.getSupportedValuesOf("timeZone") returns non-canonical timezones.
+  # This is a bug in Intl, not Temporal.
+  # https://g-issues.chromium.org/issues/457835186
+  'intl402/Temporal/ZonedDateTime/prototype/equals/canonical-not-equal': [FAIL],
 
   # End Temporal test expectations
 
@@ -577,6 +573,14 @@
   'staging/Intl402/Temporal/old/non-iso-calendars-islamic': [SKIP],
   'staging/Intl402/Temporal/old/non-iso-calendars-islamic-rgsa': [SKIP],
 
+  # Older ICU4C revision with different era codes
+  'staging/Intl402/Temporal/old/non-iso-calendars-hebrew': [SKIP],
+  'staging/Intl402/Temporal/old/non-iso-calendars-islamic-civil': [SKIP],
+  'staging/Intl402/Temporal/old/non-iso-calendars-islamic-tbla': [SKIP],
+  'staging/Intl402/Temporal/old/non-iso-calendars-islamicc': [SKIP],
+  'staging/Intl402/Temporal/old/non-iso-calendars-japanese': [SKIP],
+  'staging/Intl402/Temporal/old/non-iso-calendars-roc': [SKIP],
+
   # Somehow passes on Android (b/433933898):
   'staging/Intl402/Temporal/old/non-iso-calendars-chinese': [SKIP],
   'staging/Intl402/Temporal/old/non-iso-calendars-dangi': [SKIP],
@@ -831,8 +835,6 @@
   'built-ins/Iterator/concat/throws-typeerror-when-generator-is-running-return': [FAIL],
   'built-ins/Iterator/concat/throws-typeerror-when-iterator-not-an-object': [FAIL],
   'built-ins/Iterator/concat/zero-arguments': [FAIL],
-  'intl402/DateTimeFormat/prototype/formatRange/to-datetime-formattable-with-different-arg-kinds': [FAIL],
-  'intl402/DateTimeFormat/prototype/formatRangeToParts/to-datetime-formattable-with-different-arg-kinds': [FAIL],
   'language/import/import-defer/deferred-namespace-object/to-string-tag': [FAIL],
 
   'staging/sm/class/superCallOrder': [FAIL],
@@ -1125,16 +1127,6 @@
 [ALWAYS, {
   'intl402/String/prototype/toLocaleLowerCase/validates-all-locale-identifiers': [SKIP],
   'intl402/String/prototype/toLocaleUpperCase/validates-all-locale-identifiers': [SKIP],
-  'intl402/Temporal/Duration/prototype/round/relativeto-dst-back-transition': [SKIP],
-  'intl402/Temporal/Duration/prototype/total/relativeto-dst-back-transition': [SKIP],
-  'intl402/Temporal/PlainDate/prototype/since/wrapping-at-end-of-month-gregorian': [SKIP],
-  'intl402/Temporal/PlainDate/prototype/until/wrapping-at-end-of-month-gregorian': [SKIP],
-  'intl402/Temporal/PlainDateTime/prototype/since/wrapping-at-end-of-month-gregorian': [SKIP],
-  'intl402/Temporal/PlainDateTime/prototype/until/wrapping-at-end-of-month-gregorian': [SKIP],
-  'intl402/Temporal/ZonedDateTime/prototype/since/same-date-reverse-wallclock': [SKIP],
-  'intl402/Temporal/ZonedDateTime/prototype/since/wrapping-at-end-of-month-gregorian': [SKIP],
-  'intl402/Temporal/ZonedDateTime/prototype/until/same-date-reverse-wallclock': [SKIP],
-  'intl402/Temporal/ZonedDateTime/prototype/until/wrapping-at-end-of-month-gregorian': [SKIP],
   'staging/sm/DataView/get-set-index-range': [SKIP],
   'staging/sm/Math/acosh-exact': [SKIP],
   'staging/sm/Math/atanh-exact': [SKIP],
@@ -1187,5 +1179,30 @@
   'language/module-code/top-level-await/rejection-order': [FAIL],
 }],
 # end import test262@a073f479f80b336256b7fc4e04700c827293e2fe
+####
+
+####
+# Roll-watcher patch
+[ALWAYS, {
+  'built-ins/Temporal/Duration/compare/relativeto-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/Duration/prototype/round/relativeto-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/Duration/prototype/toJSON/large-with-small-units': [SKIP],
+  'built-ins/Temporal/Duration/prototype/toString/large-with-small-units': [SKIP],
+  'built-ins/Temporal/Duration/prototype/total/relativeto-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/PlainDateTime/compare/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/PlainDateTime/from/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/PlainDateTime/prototype/equals/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/PlainDateTime/prototype/since/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/PlainDateTime/prototype/until/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/ZonedDateTime/compare/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/ZonedDateTime/from/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/ZonedDateTime/prototype/equals/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/ZonedDateTime/prototype/since/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/Temporal/ZonedDateTime/prototype/until/argument-propertybag-optional-properties': [SKIP],
+  'built-ins/ThrowTypeError/distinct-cross-realm': [SKIP],
+  'built-ins/Uint8Array/prototype/setFromBase64/trailing-garbage': [SKIP],
+  'intl402/Intl/supportedValuesOf/calendars-required-by-intl-era-monthcode': [SKIP],
+}],
+# End roll-watcher patch
 ####
 ]

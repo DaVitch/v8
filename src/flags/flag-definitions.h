@@ -12,19 +12,19 @@
 //
 // PRESUBMIT_INTENTIONALLY_MISSING_INCLUDE_GUARD
 
-#define DEFINE_IMPLICATION(whenflag, thenflag) \
-  DEFINE_VALUE_IMPLICATION(whenflag, thenflag, true)
+#define DEFINE_IMPLICATION(cond, thenflag) \
+  DEFINE_VALUE_IMPLICATION(cond, thenflag, true)
 
 // A weak implication will be overwritten by a normal implication or by an
 // explicit flag.
-#define DEFINE_WEAK_IMPLICATION(whenflag, thenflag) \
-  DEFINE_WEAK_VALUE_IMPLICATION(whenflag, thenflag, true)
+#define DEFINE_WEAK_IMPLICATION(cond, thenflag) \
+  DEFINE_WEAK_VALUE_IMPLICATION(cond, thenflag, true)
 
-#define DEFINE_WEAK_NEG_IMPLICATION(whenflag, thenflag) \
-  DEFINE_WEAK_VALUE_IMPLICATION(whenflag, thenflag, false)
+#define DEFINE_WEAK_NEG_IMPLICATION(cond, thenflag) \
+  DEFINE_WEAK_VALUE_IMPLICATION(cond, thenflag, false)
 
-#define DEFINE_NEG_IMPLICATION(whenflag, thenflag) \
-  DEFINE_VALUE_IMPLICATION(whenflag, thenflag, false)
+#define DEFINE_NEG_IMPLICATION(cond, thenflag) \
+  DEFINE_VALUE_IMPLICATION(cond, thenflag, false)
 
 #define DEFINE_NEG_NEG_IMPLICATION(whenflag, thenflag) \
   DEFINE_NEG_VALUE_IMPLICATION(whenflag, thenflag, false)
@@ -60,28 +60,29 @@
 
 // We produce the code to set flags when it is implied by another flag.
 #elif defined(FLAG_MODE_DEFINE_IMPLICATIONS)
-#define DEFINE_VALUE_IMPLICATION(whenflag, thenflag, value)   \
-  changed |= TriggerImplication(v8_flags.whenflag, #whenflag, \
-                                &v8_flags.thenflag, #thenflag, value, false);
+#define DEFINE_VALUE_IMPLICATION(cond, thenflag, value)                     \
+  changed |= TriggerImplication(cond, #cond, &v8_flags.thenflag, #thenflag, \
+                                value, false);
 
 // A weak implication will be overwritten by a normal implication or by an
 // explicit flag.
-#define DEFINE_WEAK_VALUE_IMPLICATION(whenflag, thenflag, value) \
-  changed |= TriggerImplication(v8_flags.whenflag, #whenflag,    \
-                                &v8_flags.thenflag, #thenflag, value, true);
+#define DEFINE_WEAK_VALUE_IMPLICATION(cond, thenflag, value)                \
+  changed |= TriggerImplication(cond, #cond, &v8_flags.thenflag, #thenflag, \
+                                value, true);
 
-#define DEFINE_GENERIC_IMPLICATION(whenflag, statement) \
-  if (v8_flags.whenflag) statement;
+#define DEFINE_GENERIC_IMPLICATION(cond, statement) \
+  if (cond) statement;
 
-#define DEFINE_REQUIREMENT(statement) CHECK(statement);
+// TODO(457654443): can we use FlagError for this, too?
+#define DEFINE_REQUIREMENT(statement) CHECK_NO_SECURITY_IMPACT(statement);
 
 // Enforce that a flag was not explicitly set via command line. Setting a value
 // via implications is still allowed.
-#define DEFINE_NOT_EXPLICITLY_SET_IMPLICATION(whenflag, thenflag) \
-  TriggerNotExplicitlySetImplication(v8_flags.whenflag, #whenflag, #thenflag);
+#define DEFINE_NOT_EXPLICITLY_SET_IMPLICATION(cond, thenflag) \
+  TriggerNotExplicitlySetImplication(cond, #cond, #thenflag);
 
-#define DEFINE_NEG_VALUE_IMPLICATION(whenflag, thenflag, value)    \
-  changed |= TriggerImplication(!v8_flags.whenflag, "!" #whenflag, \
+#define DEFINE_NEG_VALUE_IMPLICATION(whenflag, thenflag, value) \
+  changed |= TriggerImplication(!(whenflag), "!" #whenflag,     \
                                 &v8_flags.thenflag, #thenflag, value, false);
 
 #define DEFINE_NEG_VALUE_VALUE_IMPLICATION(whenflag, whenvalue, thenflag, \
@@ -90,21 +91,28 @@
       TriggerImplication(v8_flags.whenflag != whenvalue, #whenflag,       \
                          &v8_flags.thenflag, #thenflag, thenvalue, false);
 
-#define DEFINE_MIN_VALUE_IMPLICATION(flag, min_value)             \
-  changed |= TriggerImplication(v8_flags.flag < min_value, #flag, \
-                                &v8_flags.flag, #flag, min_value, false);
+#define DEFINE_MIN_VALUE_IMPLICATION(flag, min_value)                     \
+  changed |=                                                              \
+      TriggerImplication(v8_flags.flag < min_value, #flag "<" #min_value, \
+                         &v8_flags.flag, #flag, min_value, false);
 
 #define DEFINE_DISABLE_FLAG_IMPLICATION(whenflag, thenflag) \
-  if (v8_flags.whenflag && v8_flags.thenflag) {             \
+  if (whenflag && thenflag) {                               \
     PrintF(stderr, "Warning: disabling flag --" #thenflag   \
                    " due to conflicting flags\n");          \
   }                                                         \
   DEFINE_VALUE_IMPLICATION(whenflag, thenflag, false)
 
-// We apply a generic macro to the flags.
+// We apply a generic macro to the full flags.
 #elif defined(FLAG_MODE_APPLY)
 
 #define FLAG_FULL FLAG_MODE_APPLY
+
+// We apply a generic macro to the flag names.
+#elif defined(FLAG_MODE_APPLY_NAME)
+
+#define FLAG_FULL(ftype, ctype, nam, def, cmt) FLAG_MODE_APPLY_NAME(nam)
+#define FLAG_READONLY(ftype, ctype, nam, def, cmt) FLAG_MODE_APPLY_NAME(nam)
 
 #else
 #error No mode supplied when including flags.defs
@@ -137,10 +145,6 @@
 
 #ifndef DEFINE_NEG_VALUE_IMPLICATION
 #define DEFINE_NEG_VALUE_IMPLICATION(whenflag, thenflag, value)
-#endif
-#ifndef DEFINE_NEG_VALUE_VALUE_IMPLICATION
-#define DEFINE_NEG_VALUE_VALUE_IMPLICATION(whenflag, whenvalue, thenflag, \
-                                           thenvalue)
 #endif
 
 #ifndef DEFINE_MIN_VALUE_IMPLICATION
@@ -311,7 +315,7 @@ DEFINE_BOOL(js_shipping, true, "enable all shipped JavaScript features")
 #endif
 
 // Features that are complete (but still behind the --harmony flag).
-#define HARMONY_STAGED_BASE(V) V(harmony_temporal, "Temporal")
+#define HARMONY_STAGED_BASE(V)
 
 #define JAVASCRIPT_STAGED_FEATURES_BASE(V) V(js_upsert, "upsert")
 
@@ -326,8 +330,9 @@ DEFINE_BOOL(js_shipping, true, "enable all shipped JavaScript features")
 #endif
 
 // Features that are shipping (turned on by default, but internal flag remains).
-#define HARMONY_SHIPPING_BASE(V) \
-  V(harmony_import_attributes, "harmony import attributes")
+#define HARMONY_SHIPPING_BASE(V)                            \
+  V(harmony_import_attributes, "harmony import attributes") \
+  V(harmony_temporal, "Temporal")
 
 #define JAVASCRIPT_SHIPPING_FEATURES_BASE(V)                                 \
   V(js_regexp_duplicate_named_groups, "RegExp duplicate named groups")       \
@@ -713,7 +718,11 @@ DEFINE_BOOL(maglev_reuse_stack_slots, true,
             "reuse stack slots in the maglev optimizing compiler")
 DEFINE_BOOL(maglev_untagged_phis, true,
             "enable phi untagging in the maglev optimizing compiler")
-DEFINE_BOOL(maglev_hoist_osr_value_phi_untagging, true,
+// The maglev_hoist_osr_value_phi_untagging flag can hoist untaggings over
+// ThrowReferenceErrorIfHole and thus causes a map check on the hole.
+// As such it is incompatible with unmap_holes.
+DEFINE_NEG_IMPLICATION(unmap_holes, maglev_hoist_osr_value_phi_untagging)
+DEFINE_BOOL(maglev_hoist_osr_value_phi_untagging, false,
             "enable phi untagging to hoist untagging of osr values")
 DEFINE_EXPERIMENTAL_FEATURE(
     maglev_speculative_hoist_phi_untagging,
@@ -795,12 +804,18 @@ DEFINE_EXPERIMENTAL_FEATURE(
 #ifdef V8_TARGET_ARCH_64_BIT
 DEFINE_BOOL(additive_safe_int_feedback, true,
             "Enable the use of AdditiveSafeInteger feedback")
+DEFINE_EXPERIMENTAL_FEATURE(
+    turbolev_additive_safe_int_feedback,
+    "Enable the use of AdditiveSafeInteger feedback for Turbolev")
 // Additive safe ints are only used by TurboFan.
 DEFINE_NEG_IMPLICATION(jitless, additive_safe_int_feedback)
 DEFINE_NEG_IMPLICATION(disable_optimizing_compilers, additive_safe_int_feedback)
 #else
 DEFINE_BOOL_READONLY(additive_safe_int_feedback, false,
                      "Enable the use of AdditiveSafeInteger feedback")
+DEFINE_BOOL_READONLY(
+    turbolev_additive_safe_int_feedback, false,
+    "Enable the use of AdditiveSafeInteger feedback for Turbolev")
 #endif  // V8_TARGET_ARCH_64_BIT
 
 DEFINE_BOOL(
@@ -1522,8 +1537,8 @@ DEFINE_BOOL(maglev_osr, true, "use maglev as on-stack replacement target")
 
 // When using maglev as OSR target allow us to tier up further
 DEFINE_WEAK_VALUE_IMPLICATION(maglev_osr, osr_from_maglev, true)
-DEFINE_NEG_VALUE_IMPLICATION(use_osr, maglev_osr, false)
-DEFINE_NEG_VALUE_IMPLICATION(turbofan, osr_from_maglev, false)
+DEFINE_VALUE_IMPLICATION(!use_osr, maglev_osr, false)
+DEFINE_VALUE_IMPLICATION(!turbofan, osr_from_maglev, false)
 DEFINE_BOOL(concurrent_osr, true, "enable concurrent OSR")
 
 DEFINE_INT(maglev_allocation_folding, 2, "maglev allocation folding level")
@@ -2027,8 +2042,10 @@ DEFINE_DEBUG_BOOL(
     "enable optimization when compiling Wasm functions with Turbofan")
 DEFINE_BOOL(wasm_bounds_checks, true,
             "enable bounds checks (disable for performance testing only)")
+DEFINE_NEG_VALUE_IMPLICATION(wasm_bounds_checks, test_only_unsafe, true)
 DEFINE_BOOL(wasm_stack_checks, true,
             "enable stack checks (disable for performance testing only)")
+DEFINE_NEG_VALUE_IMPLICATION(wasm_stack_checks, test_only_unsafe, true)
 DEFINE_BOOL(
     wasm_enforce_bounds_checks, false,
     "enforce explicit bounds check even if the trap handler is available")
@@ -2054,6 +2071,7 @@ DEFINE_BOOL(wasm_inlining_ignore_call_counts, false,
             "is supposed to be used for fuzzing")
 DEFINE_BOOL(trace_wasm_inlining, false, "trace wasm inlining")
 DEFINE_BOOL(trace_wasm_typer, false, "trace wasm typer")
+DEFINE_BOOL(trace_wasm_simd_shuffle, false, "trace wasm simd shuffle")
 DEFINE_BOOL(wasm_inlining_call_indirect, true,
             "enable speculative inlining of Wasm indirect calls")
 // call_indirect inlining requires the basic inlining machinery, e.g., for
@@ -2994,6 +3012,14 @@ DEFINE_INT(max_fast_properties, 128,
 DEFINE_BOOL(native_code_counters, DEBUG_BOOL,
             "generate extra code for manipulating stats counters")
 
+#ifdef V8_ENABLE_SPARKPLUG_PLUS
+DEFINE_BOOL(sparkplug_plus, false, "enable dynamic patching on baseline code")
+#else
+DEFINE_BOOL_READONLY(sparkplug_plus, false,
+                     "enable dynamic patching on baseline code")
+#endif
+DEFINE_IMPLICATION(sparkplug_plus, short_builtin_calls)
+
 DEFINE_BOOL(super_ic, true, "use an IC for super property loads")
 
 DEFINE_BOOL(mega_dom_ic, false, "use MegaDOM IC state for API objects")
@@ -3760,12 +3786,7 @@ DEFINE_NEG_IMPLICATION(predictable, maglev_deopt_data_on_background)
 DEFINE_NEG_IMPLICATION(predictable, maglev_build_code_on_background)
 #endif  // V8_ENABLE_MAGLEV
 // Avoid random seeds in predictable mode.
-DEFINE_BOOL(predictable_and_random_seed_is_0, true,
-            "predictable && (random_seed == 0)")
-DEFINE_NEG_NEG_IMPLICATION(predictable, predictable_and_random_seed_is_0)
-DEFINE_NEG_VALUE_VALUE_IMPLICATION(random_seed, 0,
-                                   predictable_and_random_seed_is_0, false)
-DEFINE_VALUE_IMPLICATION(predictable_and_random_seed_is_0, random_seed, 12347)
+DEFINE_VALUE_IMPLICATION(predictable && random_seed == 0, random_seed, 12347)
 
 DEFINE_BOOL(predictable_gc_schedule, false,
             "Predictable garbage collection schedule. Fixes heap growing, "

@@ -20,6 +20,7 @@
 #include "include/v8-internal.h"
 #include "include/v8-isolate.h"
 #include "src/base/atomic-utils.h"
+#include "src/base/bounded-page-allocator.h"
 #include "src/base/enum-set.h"
 #include "src/base/macros.h"
 #include "src/base/platform/condition-variable.h"
@@ -211,6 +212,44 @@ class V8_EXPORT_PRIVATE ConservativePinningScope {
 using GCFlags = base::Flags<GCFlag, uint8_t>;
 DEFINE_OPERATORS_FOR_FLAGS(GCFlags)
 
+enum class CompleteSweepingReason {
+  kCollectCodeStatistics,
+  kHeapObjectIterator,
+  kStartMarking,
+  kMinorGC,
+  kMajorGC,
+  kHeapSnapshot,
+  kTearDown,
+  kFreeze,
+  kTesting,
+  kReadOnly,
+};
+
+constexpr const char* ToString(CompleteSweepingReason reason) {
+  switch (reason) {
+    case CompleteSweepingReason::kCollectCodeStatistics:
+      return "collect code statistics";
+    case CompleteSweepingReason::kHeapObjectIterator:
+      return "heap object iterator";
+    case CompleteSweepingReason::kStartMarking:
+      return "start marking";
+    case CompleteSweepingReason::kMinorGC:
+      return "minor gc";
+    case CompleteSweepingReason::kMajorGC:
+      return "major gc";
+    case CompleteSweepingReason::kHeapSnapshot:
+      return "heap snapshot";
+    case CompleteSweepingReason::kTearDown:
+      return "tear down";
+    case CompleteSweepingReason::kFreeze:
+      return "freeze";
+    case CompleteSweepingReason::kTesting:
+      return "testing";
+    case CompleteSweepingReason::kReadOnly:
+      return "read only";
+  }
+}
+
 class Heap final {
  public:
   enum class HeapGrowingMode { kSlow, kConservative, kMinimal, kDefault };
@@ -300,6 +339,56 @@ class Heap final {
     std::atomic<uint64_t> low_since_mark_compact_{0};
   };
 
+  struct LimitBounds {
+    size_t minimum_old_generation_allocation_limit = 0;
+    size_t maximum_old_generation_allocation_limit = SIZE_MAX;
+
+    size_t minimum_global_allocation_limit = 0;
+    size_t maximum_global_allocation_limit = SIZE_MAX;
+
+    constexpr size_t bounded_old_generation_allocation_limit(size_t val) const {
+      DCHECK_LE(minimum_old_generation_allocation_limit,
+                maximum_old_generation_allocation_limit);
+      return std::clamp(val, minimum_old_generation_allocation_limit,
+                        maximum_old_generation_allocation_limit);
+    }
+
+    constexpr size_t bounded_global_allocation_limit(size_t val) const {
+      DCHECK_LE(minimum_global_allocation_limit,
+                maximum_global_allocation_limit);
+      return std::clamp(val, minimum_global_allocation_limit,
+                        maximum_global_allocation_limit);
+    }
+
+    void AtLeast(size_t new_min_old_gen_limit, size_t new_min_global_limit) {
+      minimum_old_generation_allocation_limit =
+          bounded_old_generation_allocation_limit(new_min_old_gen_limit);
+      minimum_global_allocation_limit =
+          bounded_global_allocation_limit(new_min_global_limit);
+    }
+
+    void AtMost(size_t new_max_old_gen_limit, size_t new_max_global_limit) {
+      maximum_old_generation_allocation_limit =
+          bounded_old_generation_allocation_limit(new_max_old_gen_limit);
+      maximum_global_allocation_limit =
+          bounded_global_allocation_limit(new_max_global_limit);
+    }
+
+    static LimitBounds AtLeastCurrentLimits(Heap* heap) {
+      return {
+          .minimum_old_generation_allocation_limit =
+              heap->old_generation_allocation_limit(),
+          .minimum_global_allocation_limit = heap->global_allocation_limit()};
+    }
+
+    static LimitBounds AtMostCurrentLimits(Heap* heap) {
+      return {
+          .maximum_old_generation_allocation_limit =
+              heap->old_generation_allocation_limit(),
+          .maximum_global_allocation_limit = heap->global_allocation_limit()};
+    }
+  };
+
   // Support for context snapshots.  After calling this we have a linear
   // space to write objects in each space.
   struct Chunk {
@@ -376,6 +465,10 @@ class Heap final {
   static inline void CopyBlock(Address dst, Address src, size_t byte_size);
 
   perfetto::NamedTrack tracing_track() const { return tracing_track_; }
+
+  bool is_gc_tracing_category_enabled() const {
+    return *gc_tracing_category_enabled_;
+  }
 
   enum class StackScanMode { kNone, kFull, kSelective };
   StackScanMode ConservativeStackScanningModeForMinorGC() const {
@@ -1113,8 +1206,8 @@ class Heap final {
   V8_EXPORT_PRIVATE void FinalizeIncrementalMarkingAtomicallyIfRunning(
       GarbageCollectionReason gc_reason);
 
-  V8_EXPORT_PRIVATE void CompleteSweepingFull();
-  void CompleteSweepingYoung();
+  V8_EXPORT_PRIVATE void CompleteSweepingFull(CompleteSweepingReason reason);
+  void CompleteSweepingYoung(CompleteSweepingReason reason);
 
   // Ensures that sweeping is finished for that object's page.
   void EnsureSweepingCompletedForObject(Tagged<HeapObject> object);
@@ -1475,6 +1568,9 @@ class Heap final {
   // Returns the global amount of bytes after the last MarkCompact GC.
   V8_EXPORT_PRIVATE size_t GlobalConsumedBytesAtLastGC() const;
 
+  V8_EXPORT_PRIVATE size_t OldGenerationAllocationLimitForTesting() const;
+  V8_EXPORT_PRIVATE size_t GlobalAllocationLimitForTesting() const;
+
   // We allow incremental marking to overshoot the V8 and global allocation
   // limit for performance reasons. If the overshoot is too large then we are
   // more eager to finalize incremental marking.
@@ -1611,7 +1707,7 @@ class Heap final {
     return sweeper_->major_sweeping_in_progress();
   }
 
-  void FinishSweepingIfOutOfWork();
+  void FinishSweepingIfOutOfWork(CompleteSweepingReason reason);
 
   enum class SweepingForcedFinalizationMode { kUnifiedHeap, kV8Only };
 
@@ -1619,7 +1715,7 @@ class Heap final {
   //
   // Note: Can only be called safely from main thread.
   V8_EXPORT_PRIVATE void EnsureSweepingCompleted(
-      SweepingForcedFinalizationMode mode);
+      SweepingForcedFinalizationMode mode, CompleteSweepingReason reason);
   void EnsureYoungSweepingCompleted();
   void EnsureQuarantinedPagesSweepingCompleted();
 
@@ -1660,7 +1756,7 @@ class Heap final {
 
   // Ensure that we have swept all spaces in such a way that we can iterate
   // over all objects.
-  V8_EXPORT_PRIVATE void MakeHeapIterable();
+  V8_EXPORT_PRIVATE void MakeHeapIterable(CompleteSweepingReason reason);
 
   V8_EXPORT_PRIVATE void Unmark();
   V8_EXPORT_PRIVATE void DeactivateMajorGCInProgressFlag();
@@ -2073,46 +2169,8 @@ class Heap final {
     size_t global_allocation_limit;
   };
 
-  struct LimitsComputationBoundaries {
-    size_t minimum_old_generation_allocation_limit = 0;
-    size_t maximum_old_generation_allocation_limit = SIZE_MAX;
-
-    size_t minimum_global_allocation_limit = 0;
-    size_t maximum_global_allocation_limit = SIZE_MAX;
-
-    size_t bounded_old_generation_allocation_limit(size_t val) {
-      DCHECK_LE(minimum_old_generation_allocation_limit,
-                maximum_old_generation_allocation_limit);
-      const size_t capped =
-          std::min(val, maximum_old_generation_allocation_limit);
-      return std::max(capped, minimum_old_generation_allocation_limit);
-    }
-
-    size_t bounded_global_allocation_limit(size_t val) {
-      DCHECK_LE(minimum_global_allocation_limit,
-                maximum_global_allocation_limit);
-      const size_t capped = std::min(val, maximum_global_allocation_limit);
-      return std::max(capped, minimum_global_allocation_limit);
-    }
-
-    static LimitsComputationBoundaries AtLeastCurrentLimits(Heap* heap) {
-      return {
-          .minimum_old_generation_allocation_limit =
-              heap->old_generation_allocation_limit(),
-          .minimum_global_allocation_limit = heap->global_allocation_limit()};
-    }
-
-    static LimitsComputationBoundaries AtMostCurrentLimits(Heap* heap) {
-      return {
-          .maximum_old_generation_allocation_limit =
-              heap->old_generation_allocation_limit(),
-          .maximum_global_allocation_limit = heap->global_allocation_limit()};
-    }
-  };
-
   LimitsComputationResult UpdateAllocationLimits(
-      LimitsComputationBoundaries boundaries,
-      const char* caller = __builtin_FUNCTION());
+      LimitBounds boundaries, const char* caller = __builtin_FUNCTION());
 
   // ===========================================================================
   // GC Tasks. =================================================================
@@ -2555,6 +2613,8 @@ class Heap final {
   perfetto::NamedTrack tracing_track_;
   perfetto::NamedTrack loading_track_;
 
+  const uint8_t* gc_tracing_category_enabled_ = nullptr;
+
   // Classes in "heap" can be friends.
   friend class ActivateMemoryReducerTask;
   friend class AlwaysAllocateScope;
@@ -2627,6 +2687,15 @@ class Heap final {
   friend class HeapInternalsBase;
 };
 
+constexpr const char* ToString(Heap::SweepingForcedFinalizationMode mode) {
+  switch (mode) {
+    case Heap::SweepingForcedFinalizationMode::kV8Only:
+      return "v8 only";
+    case Heap::SweepingForcedFinalizationMode::kUnifiedHeap:
+      return "unified heap";
+  }
+}
+
 #define DECL_RIGHT_TRIM(T)                                        \
   extern template EXPORT_TEMPLATE_DECLARE(V8_EXPORT_PRIVATE) void \
   Heap::RightTrimArray<T>(Tagged<T> object, int new_capacity,     \
@@ -2642,7 +2711,7 @@ using HexAddress = base::StrongAlias<HexAddressTag, Address>;
   V(size_t, size)                \
   V(size_t, free_size)           \
   V(size_t, largest_free_region) \
-  V(size_t, last_allocation_status)
+  V(base::BoundedPageAllocator::AllocationStatus, last_allocation_status)
 
 // When changing any of these fields please also update cs/crash::ReadHeapStats.
 class CodeCageStats {

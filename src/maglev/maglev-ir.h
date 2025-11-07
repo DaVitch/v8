@@ -166,6 +166,7 @@ class ExceptionHandlerInfo;
   V(Float64Constant)                \
   V(Int32Constant)                  \
   V(Uint32Constant)                 \
+  V(ShiftedInt53Constant)           \
   V(IntPtrConstant)                 \
   V(RootConstant)                   \
   V(SmiConstant)                    \
@@ -217,7 +218,18 @@ class ExceptionHandlerInfo;
   V(UnsafeSmiTagInt32)                    \
   V(UnsafeSmiTagIntPtr)                   \
   V(UnsafeSmiTagUint32)                   \
-  V(UnsafeSmiUntag)
+  V(UnsafeSmiUntag)                       \
+  V(CheckedShiftedInt53ToUint32)          \
+  V(CheckedIntPtrToShiftedInt53)          \
+  V(CheckedHoleyFloat64ToShiftedInt53)    \
+  V(UnsafeSmiTagShiftedInt53)             \
+  V(CheckedNumberToShiftedInt53)          \
+  V(ShiftedInt53ToNumber)                 \
+  V(CheckedShiftedInt53ToInt32)           \
+  V(ChangeInt32ToShiftedInt53)            \
+  V(ChangeUint32ToShiftedInt53)           \
+  V(ChangeShiftedInt53ToFloat64)          \
+  V(CheckedSmiTagShiftedInt53)
 
 #define VALUE_NODE_LIST(V)                                            \
   V(Identity)                                                         \
@@ -301,6 +313,7 @@ class ExceptionHandlerInfo;
   V(TruncateUnsafeNumberOrOddballToInt32)                             \
   V(TruncateHoleyFloat64ToInt32)                                      \
   V(TruncateUint32ToInt32)                                            \
+  V(TruncateShiftedInt53ToInt32)                                      \
   V(Int32ToUint8Clamped)                                              \
   V(Uint32ToUint8Clamped)                                             \
   V(Float64ToUint8Clamped)                                            \
@@ -308,6 +321,7 @@ class ExceptionHandlerInfo;
   V(Int32CountLeadingZeros)                                           \
   V(TaggedCountLeadingZeros)                                          \
   V(Float64CountLeadingZeros)                                         \
+  V(ShiftedInt53ToBoolean)                                            \
   V(IntPtrToBoolean)                                                  \
   V(Float64ToHeapNumberForField)                                      \
   V(CheckedNumberOrOddballToFloat64)                                  \
@@ -345,6 +359,7 @@ class ExceptionHandlerInfo;
   V(VirtualObject)                                                    \
   V(GetContinuationPreservedEmbedderData)                             \
   V(ReturnedValue)                                                    \
+  V(ShiftedInt53AddWithOverflow)                                      \
   CONSTANT_VALUE_NODE_LIST(V)                                         \
   CONVERSION_NODE_LIST(V)                                             \
   INT32_OPERATIONS_NODE_LIST(V)                                       \
@@ -762,6 +777,9 @@ enum class ValueRepresentation : uint8_t {
   kFloat64,
   kHoleyFloat64,
   kIntPtr,
+  // Only enabled in 64 bit archs, this is an Int53 (AdditiveSafeInteger range)
+  // shifted by 11 bits. The lower 11 bits are 0.
+  kShiftedInt53,
   kNone,
 };
 
@@ -800,6 +818,29 @@ inline constexpr bool IsZeroExtendedRepresentation(ValueRepresentation repr) {
 #endif
 }
 
+class ShiftedInt53 {
+ public:
+  constexpr explicit ShiftedInt53(int64_t value = 0) : value_(value << 11) {
+    DCHECK(IsSafeInteger(value));
+  }
+
+  constexpr explicit ShiftedInt53(int32_t value)
+      : ShiftedInt53(static_cast<int64_t>(value)) {}
+
+  constexpr explicit ShiftedInt53(double value)
+      : ShiftedInt53(static_cast<int64_t>(value)) {
+    DCHECK(IsSafeInteger(value));
+  }
+
+  constexpr auto operator<=>(const ShiftedInt53& other) const = default;
+
+  constexpr int64_t ToInt64() const { return value_ >> 11; }
+  constexpr int64_t value() const { return value_; }
+
+ private:
+  int64_t value_;
+};
+
 inline bool ValueRepresentationIs(ValueRepresentation got,
                                   ValueRepresentation expected) {
   // Allow Float64 values to be inputs when HoleyFloat64 is expected.
@@ -818,6 +859,7 @@ enum class UseRepresentation : uint8_t {
   kInt32,
   kTruncatedInt32,
   kUint32,
+  kShiftedInt53,
   kFloat64,
   kHoleyFloat64,
   kLast = kHoleyFloat64
@@ -1332,6 +1374,8 @@ inline std::ostream& operator<<(std::ostream& os,
       return os << "HoleyFloat64";
     case ValueRepresentation::kIntPtr:
       return os << "IntPtr";
+    case ValueRepresentation::kShiftedInt53:
+      return os << "ShiftedInt53";
     case ValueRepresentation::kNone:
       return os << "None";
   }
@@ -1625,6 +1669,10 @@ class OpProperties {
   static constexpr OpProperties Uint32() {
     return OpProperties(
         kValueRepresentationBits::encode(ValueRepresentation::kUint32));
+  }
+  static constexpr OpProperties ShiftedInt53() {
+    return OpProperties(
+        kValueRepresentationBits::encode(ValueRepresentation::kShiftedInt53));
   }
   static constexpr OpProperties Float64() {
     return OpProperties(
@@ -2111,6 +2159,10 @@ class DeoptInfo {
     DCHECK_NOT_NULL(input_locations_);
     return input_locations_;
   }
+  size_t input_location_count() const { return input_location_count_; }
+  const InputLocation* input_locations_end() const {
+    return input_locations_ + input_location_count_;
+  }
   void InitializeInputLocations(Zone* zone, size_t count);
 
   Label* deopt_entry_label() { return &deopt_entry_label_; }
@@ -2118,17 +2170,11 @@ class DeoptInfo {
   int translation_index() const { return translation_index_; }
   void set_translation_index(int index) { translation_index_ = index; }
 
-#ifdef DEBUG
-  size_t input_location_count() { return input_location_count_; }
-#endif  // DEBUG
-
  private:
   DeoptFrame* top_frame_;
   const compiler::FeedbackSource feedback_to_update_;
   InputLocation* input_locations_ = nullptr;
-#ifdef DEBUG
   size_t input_location_count_ = 0;
-#endif  // DEBUG
   Label deopt_entry_label_;
   int translation_index_ = -1;
 };
@@ -2942,6 +2988,10 @@ class ValueNode : public Node {
     return (properties().value_representation() ==
             ValueRepresentation::kUint32);
   }
+  constexpr bool is_shifted_int53() const {
+    return (properties().value_representation() ==
+            ValueRepresentation::kShiftedInt53);
+  }
   constexpr bool is_float64() const {
     return (properties().value_representation() ==
             ValueRepresentation::kFloat64);
@@ -2999,6 +3049,8 @@ class ValueNode : public Node {
       case ValueRepresentation::kInt32:
       case ValueRepresentation::kUint32:
         return MachineRepresentation::kWord32;
+      case ValueRepresentation::kShiftedInt53:
+        return MachineRepresentation::kWord64;
       case ValueRepresentation::kIntPtr:
         return MachineType::PointerRepresentation();
       case ValueRepresentation::kFloat64:
@@ -3444,6 +3496,28 @@ class Int32BitwiseNot : public FixedInputValueNodeT<1, Int32BitwiseNot> {
   void PrintParams(std::ostream&) const {}
 };
 
+class ShiftedInt53AddWithOverflow
+    : public FixedInputValueNodeT<2, ShiftedInt53AddWithOverflow> {
+  using Base = FixedInputValueNodeT<2, ShiftedInt53AddWithOverflow>;
+
+ public:
+  explicit ShiftedInt53AddWithOverflow(uint64_t bitfield) : Base(bitfield) {}
+
+  static constexpr OpProperties kProperties =
+      OpProperties::EagerDeopt() | OpProperties::ShiftedInt53();
+  static constexpr typename Base::InputTypes kInputTypes{
+      ValueRepresentation::kShiftedInt53, ValueRepresentation::kShiftedInt53};
+
+  static constexpr int kLeftIndex = 0;
+  static constexpr int kRightIndex = 1;
+  Input left_input() { return Node::input(kLeftIndex); }
+  Input right_input() { return Node::input(kRightIndex); }
+
+  void SetValueLocationConstraints() { UNREACHABLE(); }
+  void GenerateCode(MaglevAssembler*, const ProcessingState&) { UNREACHABLE(); }
+  void PrintParams(std::ostream&) const {}
+};
+
 template <class Derived, Operation kOperation>
 class Int32UnaryWithOverflowNode : public FixedInputValueNodeT<1, Derived> {
   using Base = FixedInputValueNodeT<1, Derived>;
@@ -3551,6 +3625,31 @@ class Int32ToBoolean : public FixedInputValueNodeT<1, Int32ToBoolean> {
       : Base(FlipBitField::update(bitfield, flip)) {}
 
   static constexpr Base::InputTypes kInputTypes{ValueRepresentation::kInt32};
+
+  Input value() { return Node::input(0); }
+
+  constexpr bool flip() const { return FlipBitField::decode(bitfield()); }
+
+  void SetValueLocationConstraints();
+  void GenerateCode(MaglevAssembler*, const ProcessingState&);
+  void PrintParams(std::ostream&) const;
+
+  auto options() const { return std::tuple{flip()}; }
+
+ private:
+  using FlipBitField = NextBitField<bool, 1>;
+};
+
+class ShiftedInt53ToBoolean
+    : public FixedInputValueNodeT<1, ShiftedInt53ToBoolean> {
+  using Base = FixedInputValueNodeT<1, ShiftedInt53ToBoolean>;
+
+ public:
+  explicit ShiftedInt53ToBoolean(uint64_t bitfield, bool flip)
+      : Base(FlipBitField::update(bitfield, flip)) {}
+
+  static constexpr Base::InputTypes kInputTypes{
+      ValueRepresentation::kShiftedInt53};
 
   Input value() { return Node::input(0); }
 
@@ -4054,6 +4153,35 @@ class Uint32Constant : public FixedInputValueNodeT<0, Uint32Constant> {
   const uint32_t value_;
 };
 
+class ShiftedInt53Constant
+    : public FixedInputValueNodeT<0, ShiftedInt53Constant> {
+  using Base = FixedInputValueNodeT<0, ShiftedInt53Constant>;
+
+ public:
+  using OutputRegister = Register;
+
+  explicit ShiftedInt53Constant(uint64_t bitfield, ShiftedInt53 value)
+      : Base(bitfield), value_(value) {}
+
+  static constexpr OpProperties kProperties = OpProperties::ShiftedInt53();
+
+  ShiftedInt53 as_shifted_int53() const { return value_; }
+  int64_t value() const { return value_.value(); }
+  int64_t ToInt64() const { return value_.ToInt64(); }
+
+  bool ToBoolean(LocalIsolate* local_isolate) const { return value() != 0; }
+
+  void SetValueLocationConstraints();
+  void GenerateCode(MaglevAssembler*, const ProcessingState&);
+  void PrintParams(std::ostream&) const;
+
+  void DoLoadToRegister(MaglevAssembler*, OutputRegister) const;
+  DirectHandle<Object> DoReify(LocalIsolate* isolate) const;
+
+ private:
+  const ShiftedInt53 value_;
+};
+
 class IntPtrConstant : public FixedInputValueNodeT<0, IntPtrConstant> {
   using Base = FixedInputValueNodeT<0, IntPtrConstant>;
 
@@ -4337,25 +4465,29 @@ class Float64Round : public FixedInputValueNodeT<1, Float64Round> {
   Kind kind_;
 };
 
-#define DEFINE_CONVERSION(name, from_repr, properties, node_type) \
-  class name : public FixedInputValueNodeT<1, name> {             \
-    using Base = FixedInputValueNodeT<1, name>;                   \
-                                                                  \
-   public:                                                        \
-    explicit name(uint64_t bitfield) : Base(bitfield) {}          \
-                                                                  \
-    static constexpr OpProperties kProperties =                   \
-        properties | OpProperties::ConversionNode();              \
-    static constexpr typename Base::InputTypes kInputTypes{       \
-        ValueRepresentation::k##from_repr};                       \
-                                                                  \
-    Input input() { return Node::input(0); }                      \
-    NodeType type() { return NodeType::k##node_type; }            \
-                                                                  \
-    int MaxCallStackArgs() const { return 0; }                    \
-    void SetValueLocationConstraints();                           \
-    void GenerateCode(MaglevAssembler*, const ProcessingState&);  \
-    void PrintParams(std::ostream&) const {}                      \
+#define DONT_DECOMPRESS_INPUTS \
+  void MarkTaggedInputsAsDecompressing() {}
+
+#define DEFINE_CONVERSION(name, from_repr, properties, node_type, ...) \
+  class name : public FixedInputValueNodeT<1, name> {                  \
+    using Base = FixedInputValueNodeT<1, name>;                        \
+                                                                       \
+   public:                                                             \
+    explicit name(uint64_t bitfield) : Base(bitfield) {}               \
+                                                                       \
+    static constexpr OpProperties kProperties =                        \
+        properties | OpProperties::ConversionNode();                   \
+    static constexpr typename Base::InputTypes kInputTypes{            \
+        ValueRepresentation::k##from_repr};                            \
+                                                                       \
+    Input input() { return Node::input(0); }                           \
+    NodeType type() { return NodeType::k##node_type; }                 \
+    __VA_ARGS__                                                        \
+                                                                       \
+    int MaxCallStackArgs() const { return 0; }                         \
+    void SetValueLocationConstraints();                                \
+    void GenerateCode(MaglevAssembler*, const ProcessingState&);       \
+    void PrintParams(std::ostream&) const {}                           \
   };
 
 #define DEFINE_TO_TAGGED(name, from_repr, node_type)                   \
@@ -4363,6 +4495,8 @@ class Float64Round : public FixedInputValueNodeT<1, Float64Round> {
     using Base = FixedInputValueNodeT<1, name>;                        \
                                                                        \
    public:                                                             \
+    /* TODO(454485895): Consider removing kForceHeapNumber since    */ \
+    /* it is now unused.                                            */ \
     enum class ConversionMode { kCanonicalizeSmi, kForceHeapNumber };  \
     explicit name(uint64_t bitfield, ConversionMode mode)              \
         : Base(ConversionModeBitField::update(bitfield, mode)) {}      \
@@ -4395,13 +4529,14 @@ class Float64Round : public FixedInputValueNodeT<1, Float64Round> {
     using ConversionModeBitField = NextBitField<ConversionMode, 1>;    \
   };
 
-#define DEFINE_PURE_CONV(name, from_repr, to_repr, node_type) \
-  DEFINE_CONVERSION(name, from_repr, OpProperties ::to_repr(), node_type)
+#define DEFINE_PURE_CONV(name, from_repr, to_repr, node_type, ...)        \
+  DEFINE_CONVERSION(name, from_repr, OpProperties ::to_repr(), node_type, \
+                    __VA_ARGS__)
 
-#define DEFINE_CHECKED_CONV(name, from_repr, to_repr, node_type)           \
+#define DEFINE_CHECKED_CONV(name, from_repr, to_repr, node_type, ...)      \
   DEFINE_CONVERSION(name, from_repr,                                       \
                     OpProperties ::to_repr() | OpProperties::EagerDeopt(), \
-                    node_type)
+                    node_type, __VA_ARGS__)
 
 #define DEFINE_TO_NUMBER(name, from_repr) \
   DEFINE_CONVERSION(                      \
@@ -4409,34 +4544,46 @@ class Float64Round : public FixedInputValueNodeT<1, Float64Round> {
       OpProperties::CanAllocate() | OpProperties::DeferredCall(), Number)
 
 // (NodeName, FromRepr, ToRepr, NodeType)
+DEFINE_PURE_CONV(ChangeInt32ToShiftedInt53, Int32, ShiftedInt53, Number)
 DEFINE_PURE_CONV(ChangeInt32ToFloat64, Int32, Float64, Number)
 DEFINE_PURE_CONV(ChangeIntPtrToFloat64, IntPtr, Float64, Number)
+DEFINE_PURE_CONV(ChangeShiftedInt53ToFloat64, ShiftedInt53, Float64, Number)
 DEFINE_PURE_CONV(ChangeUint32ToFloat64, Uint32, Float64, Number)
+DEFINE_PURE_CONV(ChangeUint32ToShiftedInt53, Uint32, ShiftedInt53, Number)
 DEFINE_PURE_CONV(ChangeFloat64ToHoleyFloat64, Float64, HoleyFloat64, Number)
 DEFINE_PURE_CONV(UnsafeHoleyFloat64ToInt32, HoleyFloat64, Int32, Number)
 DEFINE_PURE_CONV(UnsafeInt32ToUint32, Int32, Uint32, Number)
 DEFINE_PURE_CONV(UnsafeSmiTagInt32, Int32, TaggedValue, Smi)
-DEFINE_PURE_CONV(UnsafeSmiTagIntPtr, Int32, TaggedValue, Smi)
-DEFINE_PURE_CONV(UnsafeSmiTagUint32, Int32, TaggedValue, Smi)
-DEFINE_PURE_CONV(UnsafeSmiUntag, Tagged, Int32, Smi)
+DEFINE_PURE_CONV(UnsafeSmiTagIntPtr, IntPtr, TaggedValue, Smi)
+DEFINE_PURE_CONV(UnsafeSmiTagUint32, Uint32, TaggedValue, Smi)
+DEFINE_PURE_CONV(UnsafeSmiTagShiftedInt53, ShiftedInt53, TaggedValue, Smi)
+DEFINE_PURE_CONV(UnsafeSmiUntag, Tagged, Int32, Smi, DONT_DECOMPRESS_INPUTS)
 DEFINE_PURE_CONV(UnsafeNumberToFloat64, Tagged, Float64, Number)
 
 DEFINE_CHECKED_CONV(CheckedHoleyFloat64ToInt32, HoleyFloat64, Int32, Number)
+DEFINE_CHECKED_CONV(CheckedHoleyFloat64ToShiftedInt53, HoleyFloat64,
+                    ShiftedInt53, Number)
 DEFINE_CHECKED_CONV(CheckedHoleyFloat64ToFloat64, HoleyFloat64, Float64, Number)
 DEFINE_CHECKED_CONV(CheckedInt32ToUint32, Int32, Uint32, Number)
 DEFINE_CHECKED_CONV(CheckedIntPtrToInt32, IntPtr, Int32, Number)
+DEFINE_CHECKED_CONV(CheckedIntPtrToShiftedInt53, IntPtr, ShiftedInt53, Number)
+DEFINE_CHECKED_CONV(CheckedShiftedInt53ToInt32, ShiftedInt53, Int32, Number)
+DEFINE_CHECKED_CONV(CheckedShiftedInt53ToUint32, ShiftedInt53, Uint32, Number)
 DEFINE_CHECKED_CONV(CheckedNumberToInt32, Tagged, Int32, Number)
+DEFINE_CHECKED_CONV(CheckedNumberToShiftedInt53, Tagged, ShiftedInt53, Number)
 DEFINE_CHECKED_CONV(CheckedNumberToFloat64, Tagged, Float64, Number)
 DEFINE_CHECKED_CONV(CheckedSmiTagFloat64, HoleyFloat64, TaggedValue, Smi)
 DEFINE_CHECKED_CONV(CheckedSmiTagInt32, Int32, TaggedValue, Smi)
+DEFINE_CHECKED_CONV(CheckedSmiTagShiftedInt53, ShiftedInt53, TaggedValue, Smi)
 DEFINE_CHECKED_CONV(CheckedSmiTagIntPtr, IntPtr, TaggedValue, Smi)
 DEFINE_CHECKED_CONV(CheckedSmiTagUint32, Uint32, TaggedValue, Smi)
-DEFINE_CHECKED_CONV(CheckedSmiUntag, Tagged, Int32, Smi)
+DEFINE_CHECKED_CONV(CheckedSmiUntag, Tagged, Int32, Smi, DONT_DECOMPRESS_INPUTS)
 DEFINE_CHECKED_CONV(CheckedUint32ToInt32, Uint32, Int32, Number)
 
 // TODO(victorgomes): Shouldn't these actually be prefixed by Change?
 DEFINE_TO_NUMBER(Int32ToNumber, Int32)
 DEFINE_TO_NUMBER(IntPtrToNumber, IntPtr)
+DEFINE_TO_NUMBER(ShiftedInt53ToNumber, ShiftedInt53)
 DEFINE_TO_NUMBER(Uint32ToNumber, Uint32)
 
 // TODO(victorgomes): Shouldn't Float64ToTagged actually be called
@@ -4450,6 +4597,7 @@ DEFINE_TO_TAGGED(HoleyFloat64ToTagged, HoleyFloat64, NumberOrOddball)
 // CheckInt32IsSmi instead.
 DEFINE_CHECKED_CONV(CheckedSmiSizedInt32, Int32, Int32, Smi)
 
+#undef DONT_DECOMPRESS_INPUTS
 #undef DEFINE_PURE_CONV
 #undef DEFINE_CHECKED_CONV
 #undef DEFINE_TO_NUMBER
@@ -4478,6 +4626,24 @@ DEFINE_TRUNCATE_NODE(TruncateUint32ToInt32, Uint32, OpProperties::Int32())
 DEFINE_TRUNCATE_NODE(TruncateHoleyFloat64ToInt32, HoleyFloat64,
                      OpProperties::Int32())
 #undef DEFINE_TRUNCATE_NODE
+
+class TruncateShiftedInt53ToInt32
+    : public FixedInputValueNodeT<1, TruncateShiftedInt53ToInt32> {
+  using Base = FixedInputValueNodeT<1, TruncateShiftedInt53ToInt32>;
+
+ public:
+  explicit TruncateShiftedInt53ToInt32(uint64_t bitfield) : Base(bitfield) {}
+
+  static constexpr OpProperties kProperties = OpProperties::Int32();
+  static constexpr
+      typename Base::InputTypes kInputTypes{ValueRepresentation::kShiftedInt53};
+
+  Input input() { return Node::input(0); }
+
+  void SetValueLocationConstraints() { UNREACHABLE(); }
+  void GenerateCode(MaglevAssembler*, const ProcessingState&) { UNREACHABLE(); }
+  void PrintParams(std::ostream&) const {}
+};
 
 class CheckedNumberOrOddballToFloat64
     : public FixedInputValueNodeT<1, CheckedNumberOrOddballToFloat64> {
@@ -6660,11 +6826,48 @@ inline void VirtualObject::ForEachNestedRuntimeInput(
 }
 
 template <typename Function>
-void VirtualObject::ForEachNestedRuntimeInput(VirtualObjectList virtual_objects,
-                                              Function&& f,
-                                              ForEachSlotIterationMode mode) {
-  static_cast<const VirtualObject*>(this)->ForEachNestedRuntimeInput(
-      virtual_objects, f, mode);
+inline void VirtualObject::ForEachNestedRuntimeInput(
+    VirtualObjectList virtual_objects, Function&& f,
+    ForEachSlotIterationMode mode) {
+  ForEachSlot(
+      [&](ValueNode*& value, const vobj::Field& desc) {
+        // Subtle: this modifies the location of the caller's `value` in-place.
+        // TODO(jgruber): Change the behavior of all related ForEach functions
+        // such that they don't do anything besides iteration.
+        value = value->UnwrapIdentities();
+        if (IsConstantNode(value->opcode())) {
+          // No location assigned to constants.
+          return;
+        }
+        // Special nodes.
+        switch (value->opcode()) {
+          case Opcode::kArgumentsElements:
+          case Opcode::kArgumentsLength:
+          case Opcode::kRestLength:
+            // No location assigned to these opcodes.
+            break;
+          case Opcode::kVirtualObject:
+            UNREACHABLE();
+          case Opcode::kInlinedAllocation: {
+            InlinedAllocation* alloc = value->Cast<InlinedAllocation>();
+            VirtualObject* inner_vobject =
+                virtual_objects.FindAllocatedWith(alloc);
+            // Check if it has escaped.
+            if (inner_vobject &&
+                (!alloc->HasBeenAnalysed() || alloc->HasBeenElided())) {
+              inner_vobject->ForEachNestedRuntimeInput(virtual_objects, f,
+                                                       mode);
+            } else {
+              f(value);
+            }
+            break;
+          }
+          default:
+            f(value);
+            break;
+        }
+      },
+      mode);
 }
 
 class AllocationBlock : public FixedInputValueNodeT<0, AllocationBlock> {
@@ -7101,11 +7304,9 @@ class CheckMapsWithAlreadyLoadedMap
 
  public:
   explicit CheckMapsWithAlreadyLoadedMap(uint64_t bitfield,
-                                         const compiler::ZoneRefSet<Map>& maps)
-      : Base(bitfield), maps_(maps) {}
-  explicit CheckMapsWithAlreadyLoadedMap(
-      uint64_t bitfield, base::Vector<const compiler::MapRef> maps, Zone* zone)
-      : Base(bitfield), maps_(maps.begin(), maps.end(), zone) {}
+                                         const compiler::ZoneRefSet<Map>& maps,
+                                         CheckType check_type)
+      : Base(CheckTypeBitField::update(bitfield, check_type)), maps_(maps) {}
 
   static constexpr OpProperties kProperties =
       OpProperties::EagerDeopt() | OpProperties::CanRead();
@@ -7113,6 +7314,7 @@ class CheckMapsWithAlreadyLoadedMap
       ValueRepresentation::kTagged, ValueRepresentation::kTagged};
 
   const compiler::ZoneRefSet<Map>& maps() const { return maps_; }
+  CheckType check_type() const { return CheckTypeBitField::decode(bitfield()); }
 
   Input object_input() { return input(0); }
   Input map_input() { return input(1); }
@@ -7121,9 +7323,10 @@ class CheckMapsWithAlreadyLoadedMap
   void GenerateCode(MaglevAssembler*, const ProcessingState&);
   void PrintParams(std::ostream&) const;
 
-  auto options() const { return std::tuple{maps_}; }
+  auto options() const { return std::tuple{maps_, check_type()}; }
 
  private:
+  using CheckTypeBitField = NextBitField<CheckType, 1>;
   const compiler::ZoneRefSet<Map> maps_;
 };
 
@@ -7642,12 +7845,12 @@ class CheckJSDataViewBounds : public FixedInputNodeT<2, CheckJSDataViewBounds> {
 
   static constexpr OpProperties kProperties = OpProperties::EagerDeopt();
   static constexpr typename Base::InputTypes kInputTypes{
-      ValueRepresentation::kTagged, ValueRepresentation::kInt32};
+      ValueRepresentation::kInt32, ValueRepresentation::kIntPtr};
 
-  static constexpr int kReceiverIndex = 0;
-  static constexpr int kIndexIndex = 1;
-  Input receiver_input() { return input(kReceiverIndex); }
+  static constexpr int kIndexIndex = 0;
+  static constexpr int kByteLengthIndex = 1;
   Input index_input() { return input(kIndexIndex); }
+  Input byte_length_input() { return input(kByteLengthIndex); }
 
   int MaxCallStackArgs() const;
   void SetValueLocationConstraints();
@@ -9668,34 +9871,35 @@ class StoreTaggedFieldWithWriteBarrier
   const PropertyKey property_key_;
 };
 
-class StoreSmiContextCell : public FixedInputNodeT<1, StoreSmiContextCell> {
-  using Base = FixedInputNodeT<1, StoreSmiContextCell>;
+class StoreSmiContextCell : public FixedInputNodeT<2, StoreSmiContextCell> {
+  using Base = FixedInputNodeT<2, StoreSmiContextCell>;
 
  public:
   explicit StoreSmiContextCell(uint64_t bitfield, compiler::ContextRef context,
-                               compiler::ContextCellRef context_cell,
                                int slot_offset)
       : Base(bitfield),
         context_(context),
-        context_cell_(context_cell),
         slot_offset_(slot_offset) {}
 
   static constexpr OpProperties kProperties =
       OpProperties::CanWrite() | OpProperties::DeferredCall();
-  static constexpr
-      typename Base::InputTypes kInputTypes{ValueRepresentation::kTagged};
+  static constexpr typename Base::InputTypes kInputTypes{
+      ValueRepresentation::kTagged, ValueRepresentation::kTagged};
 
   compiler::ContextRef context() const { return context_; }
-  compiler::ContextCellRef cell() const { return context_cell_; }
-  int offset() const { return offsetof(ContextCell, tagged_value_); }
   int slot_offset() const { return slot_offset_; }
 
-  static constexpr int kValueIndex = 0;
+  int offset() const { return offsetof(ContextCell, tagged_value_); }
+
+  static constexpr int kCellIndex = 0;
+  static constexpr int kValueIndex = 1;
+  Input cell_input() { return input(kCellIndex); }
   Input value_input() { return input(kValueIndex); }
 
 #ifdef V8_COMPRESS_POINTERS
   void MarkTaggedInputsAsDecompressing() {
-    value_input().node()->SetTaggedResultNeedsDecompress();
+    cell_input().node()->SetTaggedResultNeedsDecompress();
+    // Don't need to decompress values to store.
   }
 #endif
 
@@ -9705,82 +9909,79 @@ class StoreSmiContextCell : public FixedInputNodeT<1, StoreSmiContextCell> {
   }
   void SetValueLocationConstraints();
   void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const;
+  void PrintParams(std::ostream&) const {}
 
  private:
   const compiler::ContextRef context_;
-  const compiler::ContextCellRef context_cell_;
   const int slot_offset_;
 };
 
-class StoreInt32ContextCell : public FixedInputNodeT<1, StoreInt32ContextCell> {
-  using Base = FixedInputNodeT<1, StoreInt32ContextCell>;
+class StoreInt32ContextCell : public FixedInputNodeT<2, StoreInt32ContextCell> {
+  using Base = FixedInputNodeT<2, StoreInt32ContextCell>;
 
  public:
   explicit StoreInt32ContextCell(uint64_t bitfield,
                                  compiler::ContextRef context,
-                                 compiler::ContextCellRef context_cell,
                                  int slot_offset)
       : Base(bitfield),
         context_(context),
-        context_cell_(context_cell),
         slot_offset_(slot_offset) {}
 
   static constexpr OpProperties kProperties = OpProperties::CanWrite();
-  static constexpr
-      typename Base::InputTypes kInputTypes{ValueRepresentation::kInt32};
+  static constexpr typename Base::InputTypes kInputTypes{
+      ValueRepresentation::kTagged, ValueRepresentation::kInt32};
 
   compiler::ContextRef context() const { return context_; }
-  compiler::ContextCellRef cell() const { return context_cell_; }
-  int offset() const { return offsetof(ContextCell, double_value_); }
   int slot_offset() const { return slot_offset_; }
 
-  static constexpr int kValueIndex = 0;
+  int offset() const { return offsetof(ContextCell, double_value_); }
+
+  static constexpr int kCellIndex = 0;
+  static constexpr int kValueIndex = 1;
+  Input cell_input() { return input(kCellIndex); }
   Input value_input() { return input(kValueIndex); }
 
   void SetValueLocationConstraints();
   void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const;
+  void PrintParams(std::ostream&) const {}
 
  private:
   const compiler::ContextRef context_;
-  const compiler::ContextCellRef context_cell_;
   const int slot_offset_;
 };
 
 class StoreFloat64ContextCell
-    : public FixedInputNodeT<1, StoreFloat64ContextCell> {
-  using Base = FixedInputNodeT<1, StoreFloat64ContextCell>;
+    : public FixedInputNodeT<2, StoreFloat64ContextCell> {
+  using Base = FixedInputNodeT<2, StoreFloat64ContextCell>;
 
  public:
   explicit StoreFloat64ContextCell(uint64_t bitfield,
                                    compiler::ContextRef context,
-                                   compiler::ContextCellRef context_cell,
                                    int slot_offset)
       : Base(bitfield),
         context_(context),
-        context_cell_(context_cell),
         slot_offset_(slot_offset) {}
 
   static constexpr OpProperties kProperties = OpProperties::CanWrite();
-  static constexpr
-      typename Base::InputTypes kInputTypes{ValueRepresentation::kFloat64};
+  static constexpr typename Base::InputTypes kInputTypes{
+      ValueRepresentation::kTagged, ValueRepresentation::kFloat64};
 
   compiler::ContextRef context() const { return context_; }
-  compiler::ContextCellRef cell() const { return context_cell_; }
-  int offset() const { return offsetof(ContextCell, double_value_); }
   int slot_offset() const { return slot_offset_; }
 
-  static constexpr int kValueIndex = 0;
+  int offset() const { return offsetof(ContextCell, double_value_); }
+
+  static constexpr int kCellIndex = 0;
+  static constexpr int kValueIndex = 1;
+  Input cell_input() { return input(kCellIndex); }
   Input value_input() { return input(kValueIndex); }
 
   void SetValueLocationConstraints();
   void GenerateCode(MaglevAssembler*, const ProcessingState&);
-  void PrintParams(std::ostream&) const;
+  void PrintParams(std::ostream&) const {}
 
  private:
   const compiler::ContextRef context_;
-  const compiler::ContextCellRef context_cell_;
   const int slot_offset_;
 };
 

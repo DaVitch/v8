@@ -72,6 +72,7 @@
 #include "src/profiler/profile-generator.h"
 #include "src/snapshot/snapshot.h"
 #include "src/tasks/cancelable-task.h"
+#include "src/tracing/perfetto-sdk.h"
 #include "src/utils/ostreams.h"
 #include "src/utils/utils.h"
 
@@ -96,11 +97,6 @@
 #include "src/fuzzilli/cov.h"
 #include "src/fuzzilli/fuzzilli.h"
 #endif  // V8_FUZZILLI
-
-#ifdef V8_USE_PERFETTO
-#include "perfetto/tracing/track_event.h"
-#include "perfetto/tracing/track_event_legacy.h"
-#endif  // V8_USE_PERFETTO
 
 #ifdef V8_INTL_SUPPORT
 #include "unicode/locid.h"
@@ -866,18 +862,18 @@ std::shared_ptr<ModuleEmbedderData> InitializeModuleEmbedderData(
           i_isolate, kModuleEmbedderDataEstimate,
           std::make_shared<ModuleEmbedderData>(
               reinterpret_cast<v8::Isolate*>(i_isolate)));
-  v8::Local<v8::Value> module_data = Utils::ToLocal(module_data_managed);
-  context->SetEmbedderData(kModuleEmbedderDataIndex, module_data);
+  v8::Local<v8::Data> module_data = Utils::ToLocal(module_data_managed);
+  context->SetEmbedderDataV2(kModuleEmbedderDataIndex, module_data);
   return module_data_managed->get();
 }
 
 std::shared_ptr<ModuleEmbedderData> GetModuleDataFromContext(
     Local<Context> context) {
-  v8::Local<v8::Value> module_data =
-      context->GetEmbedderData(kModuleEmbedderDataIndex);
+  v8::Local<v8::Data> module_data =
+      context->GetEmbedderDataV2(kModuleEmbedderDataIndex);
   i::DirectHandle<i::Managed<ModuleEmbedderData>> module_data_managed =
       i::Cast<i::Managed<ModuleEmbedderData>>(
-          Utils::OpenDirectHandle<Value, i::Object>(module_data));
+          Utils::OpenDirectHandle<Data, i::Object>(module_data));
   return module_data_managed->get();
 }
 
@@ -6155,6 +6151,7 @@ bool FlagWithArgMatches(const char (&flag)[N], char** flag_value, int argc,
 bool Shell::SetOptions(int argc, char* argv[]) {
   options.d8_path = argv[0];
   bool disallow_unsafe_flags = false;
+  bool exit_on_flag_contradictions = false;
   for (int i = 0; i < argc; i++) {
     char* flag_value = nullptr;
     if (FlagMatches("--", &argv[i])) {
@@ -6177,6 +6174,10 @@ bool Shell::SetOptions(int argc, char* argv[]) {
     } else if (FlagMatches("--abort-on-contradictory-flags", &argv[i],
                            /*keep_flag=*/true)) {
       check_d8_flag_contradictions = true;
+    } else if (FlagMatches("--exit-on-contradictory-flags", &argv[i],
+                           /*keep_flag=*/true)) {
+      check_d8_flag_contradictions = true;
+      exit_on_flag_contradictions = true;
     } else if (FlagMatches("--disallow-unsafe-flags", &argv[i],
                            /*keep_flag=*/true)) {
       disallow_unsafe_flags = true;
@@ -6360,14 +6361,19 @@ bool Shell::SetOptions(int argc, char* argv[]) {
 
   if (disallow_unsafe_flags) {
     const auto check_flag_is_not_specified =
-        []<typename T>(const ShellOptions::DisallowReassignment<T>& flag) {
+        [&]<typename T>(const ShellOptions::DisallowReassignment<T>& flag) {
           if (!flag.WasSpecified()) {
             return;
           }
-          base::FatalNoSecurityImpact(
+          base::OS::PrintError(
               "Command-line provided flag --%s is prohibited by "
-              "--disallow-unsafe-flags.",
+              "--disallow-unsafe-flags.\n",
               flag.name());
+          if (exit_on_flag_contradictions) {
+            base::OS::ExitProcess(-1);
+          } else {
+            base::OS::Abort();
+          }
         };
     // The --disallow-unsafe-flags is meant to block known unsafe configurations
     // and mitigate spurious reports due invalid flag combinations/values. To
