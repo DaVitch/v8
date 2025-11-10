@@ -255,6 +255,7 @@ class RecomputeKnownNodeAspectsProcessor {
   PROCESS_SAFE_CONV(CheckedUint32ToInt32, int32, Number)
   PROCESS_SAFE_CONV(CheckedIntPtrToInt32, int32, Number)
   PROCESS_SAFE_CONV(CheckedHoleyFloat64ToInt32, int32, Number)
+  PROCESS_UNSAFE_CONV(UnsafeFloat64ToInt32, int32, Number)
   PROCESS_UNSAFE_CONV(UnsafeHoleyFloat64ToInt32, int32, Number)
   PROCESS_SAFE_CONV(CheckedNumberToInt32, int32, Number)
   PROCESS_UNSAFE_CONV(ChangeIntPtrToFloat64, float64, Number)
@@ -265,7 +266,7 @@ class RecomputeKnownNodeAspectsProcessor {
   PROCESS_UNSAFE_CONV(UnsafeNumberOrOddballToFloat64, float64, NumberOrOddball)
   PROCESS_UNSAFE_CONV(UnsafeNumberToFloat64, float64, Number)
   PROCESS_SAFE_CONV(CheckedHoleyFloat64ToFloat64, float64, Number)
-  PROCESS_UNSAFE_CONV(HoleyFloat64ToMaybeNanFloat64, float64, Number)
+  PROCESS_UNSAFE_CONV(HoleyFloat64ToSilencedFloat64, float64, Number)
   PROCESS_SAFE_CONV(ChangeInt32ToFloat64, float64, Number)
 #undef PROCESS_SAFE_CONV
 #undef PROCESS_UNSAFE_CONV
@@ -327,11 +328,16 @@ class RecomputeKnownNodeAspectsProcessor {
 
   template <typename NodeT>
   void ProcessLoadContextSlot(NodeT* node) {
+    ValueNode* context = node->input_node(0);
     ValueNode*& cached_value = known_node_aspects().GetContextCachedValue(
-        node->input_node(0), node->offset(),
+        context, node->offset(),
         node->is_const() ? ContextSlotMutability::kImmutable
                          : ContextSlotMutability::kMutable);
     if (!cached_value) cached_value = node;
+    if (!node->is_const()) {
+      known_node_aspects().UpdateMayHaveAliasingContexts(
+          broker(), broker()->local_isolate(), context);
+    }
   }
 
   ProcessResult ProcessNode(LoadContextSlot* node) {
