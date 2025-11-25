@@ -678,6 +678,10 @@ DEFINE_EXPERIMENTAL_FEATURE(maglev_range_analysis,
 DEFINE_BOOL(trace_maglev_range_analysis, false,
             "Trace Maglev range value analysis pass")
 DEFINE_WEAK_IMPLICATION(turbolev_future, maglev_range_analysis)
+DEFINE_BOOL(maglev_range_verification, false,
+            "Run integer range verifiction pass in Turbolev frontend pipeline")
+DEFINE_WEAK_IMPLICATION(maglev_range_verification, maglev_range_analysis)
+DEFINE_WEAK_IMPLICATION(maglev_assert, maglev_range_verification)
 
 DEFINE_UINT(
     concurrent_maglev_max_threads, 2,
@@ -718,11 +722,7 @@ DEFINE_BOOL(maglev_reuse_stack_slots, true,
             "reuse stack slots in the maglev optimizing compiler")
 DEFINE_BOOL(maglev_untagged_phis, true,
             "enable phi untagging in the maglev optimizing compiler")
-// The maglev_hoist_osr_value_phi_untagging flag can hoist untaggings over
-// ThrowReferenceErrorIfHole and thus causes a map check on the hole.
-// As such it is incompatible with unmap_holes.
-DEFINE_NEG_IMPLICATION(unmap_holes, maglev_hoist_osr_value_phi_untagging)
-DEFINE_BOOL(maglev_hoist_osr_value_phi_untagging, false,
+DEFINE_BOOL(maglev_hoist_osr_value_phi_untagging, true,
             "enable phi untagging to hoist untagging of osr values")
 DEFINE_EXPERIMENTAL_FEATURE(
     maglev_speculative_hoist_phi_untagging,
@@ -750,6 +750,8 @@ DEFINE_BOOL(maglev_print_feedback, true,
             "print feedback vector for maglev compiled code")
 DEFINE_BOOL(maglev_print_inlined, true,
             "print bytecode / feedback vectors also for inlined code")
+DEFINE_BOOL(maglev_print_provenance, true,
+            "print Maglev node provenance, ie, file name, bytecode and offset")
 
 DEFINE_BOOL(print_maglev_code, false, "print maglev code")
 DEFINE_WEAK_IMPLICATION(print_maglev_code, maglev_print_bytecode)
@@ -1049,6 +1051,8 @@ DEFINE_BOOL(
     zero_unused_memory, true,
     "Zero unused memory (except for memory which was discarded) on memory "
     "reducing GCs.")
+DEFINE_BOOL(new_old_generation_heap_size, false,
+            "Enables new old generation max heap size.")
 DEFINE_BOOL(high_end_android, false,
             "Enables high-end mode unconditionally for Android.")
 DEFINE_UINT(high_end_android_physical_memory_threshold, 8,
@@ -1743,6 +1747,9 @@ DEFINE_BOOL(
 
 DEFINE_BOOL(turboshaft_verify_load_elimination, false,
             "insert runtime checks to verify Late Load Elimination")
+DEFINE_EXPERIMENTAL_FEATURE(turboshaft_verify_load_store_taggedness,
+                            "insert runtime checks to verify the "
+                            "representation of loaded/stored values")
 DEFINE_IMPLICATION(turboshaft_verify_load_elimination,
                    deduplicate_heap_number_requests)
 DEFINE_UINT64(turboshaft_opt_bisect_limit, std::numeric_limits<uint64_t>::max(),
@@ -1787,6 +1794,9 @@ DEFINE_BOOL_READONLY(turboshaft_trace_load_elimination, false,
                      "trace Turboshaft's late load elimination")
 DEFINE_BOOL_READONLY(turboshaft_trace_if_else_to_switch, false,
                      "trace Turboshaft's if-else to switch reducer")
+DEFINE_BOOL_READONLY(turboshaft_verify_load_store_taggedness, false,
+                     "insert runtime checks to verify the representation of "
+                     "loaded/stored values")
 #endif  // DEBUG
 
 DEFINE_BOOL(profile_guided_optimization, true, "profile guided optimization")
@@ -2365,10 +2375,6 @@ DEFINE_BOOL(trace_mutator_utilization, false,
             "print mutator utilization, allocation speed, gc speed")
 DEFINE_BOOL(incremental_marking, true, "use incremental marking")
 DEFINE_BOOL(incremental_marking_task, true, "use tasks for incremental marking")
-DEFINE_BOOL(incremental_marking_start_user_visible, true,
-            "Starts incremental marking with kUserVisible priority.")
-DEFINE_BOOL(incremental_marking_always_user_visible, true,
-            "Always posts incremental marking with kUserVisible priority.")
 DEFINE_INT(incremental_marking_soft_trigger, 0,
            "threshold for starting incremental marking via a task in percent "
            "of available space: limit - size")
@@ -2512,6 +2518,8 @@ DEFINE_BOOL(memory_reducer_for_small_heaps, true,
             "use memory reducer for small heaps")
 DEFINE_INT(memory_reducer_gc_count, 2,
            "Maximum number of memory reducer GCs scheduled")
+DEFINE_BOOL(disable_eager_allocation_failures, false,
+            "Avoid eager allocations failures due to memory optimizations")
 DEFINE_BOOL(
     external_memory_accounted_in_global_limit, false,
     "External memory limits are computed as part of global limits in v8 Heap.")
@@ -2654,12 +2662,6 @@ DEFINE_NEG_IMPLICATION(memory_balancer, memory_reducer)
 DEFINE_BOOL(trace_memory_balancer, false, "print memory balancer behavior.")
 DEFINE_BOOL(late_heap_limit_check, true,
             "skips heap limit check for early GCs on allocation failure.")
-
-#if COMPRESS_POINTERS_IN_SHARED_CAGE_BOOL
-DEFINE_BOOL(reserve_contiguous_compressed_read_only_space, true,
-            "reserves a contiguous compressed read-only space in all pointer "
-            "compression cages")
-#endif
 
 // assembler-ia32.cc / assembler-arm.cc / assembler-arm64.cc / assembler-x64.cc
 #ifdef V8_ENABLE_DEBUG_CODE
@@ -2979,7 +2981,8 @@ DEFINE_STRING(heap_snapshot_path, nullptr,
 DEFINE_VALUE_IMPLICATION(fuzzing, heap_snapshot_path,
                          static_cast<const char*>(nullptr))
 DEFINE_INT(heap_snapshot_on_gc, -1,
-           "Write a heap snapshot to disk on a certain GC invocation")
+           "Write a heap snapshot to disk on a certain GC invocation. 0 "
+           "results in taking a snapshot on every invocation.")
 DEFINE_UINT(heap_snapshot_string_limit, 1024,
             "truncate strings to this length in the heap snapshot")
 DEFINE_BOOL(heap_profiler_show_hidden_objects, false,
@@ -3857,11 +3860,15 @@ DEFINE_BOOL_READONLY(shared_heap, false,
                      "Enables a shared heap between isolates.")
 #endif
 
-DEFINE_EXPERIMENTAL_FEATURE(
-    proto_assign_seq_opt,
-    "Enable optimizing a sequence of `Class_X.prototype.[key] = ...`"
-    "by replacing it by a runtime code somewhat equivalent to "
-    "`Object.assign(Class_X.prototype, [boilerplate_obj])`")
+DEFINE_BOOL(proto_assign_seq_opt, false,
+            "Enable optimizing a sequence of `Class_X.prototype.[key] = ...`"
+            "by replacing it by a runtime code somewhat equivalent to "
+            "`Object.assign(Class_X.prototype, [boilerplate_obj])`")
+DEFINE_WEAK_IMPLICATION(future, proto_assign_seq_opt)
+
+DEFINE_UINT(proto_assign_seq_opt_count, 2,
+            "The minimum number of consecutive property assignments on the "
+            "prototype object for replacing it with a single byte code")
 
 #if defined(V8_USE_LIBM_TRIG_FUNCTIONS)
 DEFINE_BOOL(use_libm_trig_functions, true, "use libm trig functions")

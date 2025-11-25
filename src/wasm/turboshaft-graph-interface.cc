@@ -147,7 +147,7 @@ class BranchHintingStresser {
 
 }  // namespace
 
-using Assembler = compiler::turboshaft::TSAssembler<
+using Assembler = compiler::turboshaft::Assembler<
     compiler::turboshaft::SelectLoweringReducer,
     compiler::turboshaft::DataViewLoweringReducer,
     compiler::turboshaft::VariableReducer>;
@@ -318,10 +318,13 @@ class TurboshaftGraphBuildingInterface
 
     if (v8_flags.wasm_inlining) {
       if (mode_ == kRegular) {
-        if (v8_flags.liftoff) {
+        if (v8_flags.liftoff ||
+            (v8_flags.experimental_wasm_compilation_hints &&
+             !decoder->module_->instruction_frequencies.empty())) {
           inlining_decisions_ = InliningTree::CreateRoot(
               decoder->zone_, decoder->module_, wire_bytes_, func_index_);
-        } else {
+        }
+        if (!v8_flags.liftoff) {
           set_no_liftoff_inlining_budget(
               InliningTree::NoLiftoffBudget(decoder->module_, func_index_));
         }
@@ -2588,9 +2591,6 @@ class TurboshaftGraphBuildingInterface
             decoder, index_wordptr, imm, kNeedsTypeOrNullCheck);
 
         size_t return_count = imm.sig->return_count();
-        // TODO(manoskouk): What if none of the cases can be inlined due to
-        // faulty hints (i.e. with the wrong signature)? Same for
-        // ReturnCallIndirect, CallRef, ReturnCallRef.
         base::Vector<InliningTree*> feedback_cases = GetFeedbackCases(decoder);
         std::vector<base::SmallVector<OpIndex, 2>> case_returns(return_count);
         // The slow path is the non-inlined generic `call_indirect`,
@@ -3822,6 +3822,29 @@ class TurboshaftGraphBuildingInterface
                 const ContIndexImmediate& new_imm, Value* result) {
     UNIMPLEMENTED();
   }
+  using WasmFXArgBufferCallback =
+      base::FunctionRef<void(size_t value_index, int offset)>;
+
+  int IterateWasmFXArgBuffer(const FunctionSig* sig,
+                             WasmFXArgBufferCallback callback) {
+    int offset = 0;
+    for (size_t i = 0; i < sig->parameter_count(); i++) {
+      int param_size = sig->GetParam(i).value_kind_full_size();
+      offset = RoundUp(offset, param_size);
+      callback(i, offset);
+      offset += param_size;
+    }
+    return offset;
+  }
+
+  std::pair<int, int> GetBufferSizeAndAlignmentFor(const FunctionSig* sig) {
+    int alignment = kSystemPointerSize;
+    int size = IterateWasmFXArgBuffer(sig, [&](size_t index, int offset) {
+      alignment =
+          std::max(alignment, sig->GetParam(index).value_kind_full_size());
+    });
+    return {size, alignment};
+  }
 
   void Resume(FullDecoder* decoder, const ContIndexImmediate& imm,
               base::Vector<HandlerCase> handlers, const Value& cont_ref,
@@ -3837,21 +3860,35 @@ class TurboshaftGraphBuildingInterface
     base::Vector<compiler::turboshaft::EffectHandler> asm_handlers =
         __ output_graph().graph_zone()
             -> AllocateVector<compiler::turboshaft::EffectHandler>(
-                             handlers.length());
-    for (int i = 0; i < handlers.length(); ++i) {
+                             handlers.size());
+    for (size_t i = 0; i < handlers.size(); ++i) {
       if (handlers[i].kind != kOnSuspend) UNIMPLEMENTED();
       asm_handlers[i].tag_index = handlers[i].tag.index;
       asm_handlers[i].block = __ NewBlock();
     }
+
+    // Reserve a stack buffer, move the tag params there and pass it to the
+    // target stack.
+    const FunctionSig* sig =
+        decoder->module_->signature(imm.cont_type->contfun_typeindex());
+    auto [size, alignment] = GetBufferSizeAndAlignmentFor(sig);
+    OpIndex arg_buffer = __ StackSlot(size, alignment);
+    IterateWasmFXArgBuffer(sig, [&](size_t index, int offset) {
+      DCHECK_EQ(args[index].type, sig->GetParam(index));
+      this->Asm().StoreOffHeap(arg_buffer, args[index].op,
+                               MemoryRepresentationFor(args[index].type),
+                               offset);
+    });
+
     asm_.set_effect_handlers_for_next_call(asm_handlers);
     CallBuiltinThroughJumptable<BuiltinCallDescriptor::WasmFXResume,
                                 HandleEffects::kYes>(
-        decoder, {stack}, CheckForException::kCatchInThisFrame);
+        decoder, {stack, arg_buffer}, CheckForException::kCatchInThisFrame);
   }
 
   void ResumeHandler(FullDecoder* decoder,
                      base::Vector<const HandlerCase> handlers,
-                     int handler_index, Value* cont_val) {
+                     size_t handler_index, Value* cont_val, Value* tag_params) {
     if (handler_index == 0) {
       resume_return_block_ = __ NewBlock();
       __ Goto(resume_return_block_);
@@ -3861,11 +3898,21 @@ class TurboshaftGraphBuildingInterface
     // handler block. It works the same way but generates the continuation
     // object instead of the exception.
     OpIndex cont = __ CatchBlockBegin();
+    OpIndex arg_buffer = __ WasmFXArgBuffer();
+
+    // Unpack tag params.
+    const FunctionSig* sig = handlers[handler_index].tag.tag->sig;
+    IterateWasmFXArgBuffer(sig, [&](size_t index, int offset) {
+      DCHECK_EQ(tag_params[index].type, sig->GetParam(index));
+      tag_params[index].op = this->Asm().LoadOffHeap(
+          arg_buffer, offset, MemoryRepresentationFor(sig->GetParam(index)));
+    });
+
     instance_cache_.ReloadCachedMemory();
     cont_val->op = cont;
     DCHECK_EQ(kOnSuspend, handlers[handler_index].kind);
     BrOrRet(decoder, handlers[handler_index].maybe_depth.br.depth);
-    if (handler_index == handlers.length() - 1) {
+    if (handler_index == handlers.size() - 1) {
       asm_.clear_effect_handlers();
       __ Bind(resume_return_block_);
     }
@@ -3874,8 +3921,16 @@ class TurboshaftGraphBuildingInterface
   void ResumeThrow(FullDecoder* decoder,
                    const wasm::ContIndexImmediate& cont_imm,
                    const TagIndexImmediate& exc_imm,
-                   base::Vector<wasm::HandlerCase> handlers, const Value args[],
-                   const Value returns[]) {
+                   base::Vector<wasm::HandlerCase> handlers, const Value& cont,
+                   const Value args[], const Value returns[]) {
+    UNIMPLEMENTED();
+  }
+
+  void ResumeThrowRef(FullDecoder* decoder,
+                      const wasm::ContIndexImmediate& cont_imm,
+                      base::Vector<wasm::HandlerCase> handlers,
+                      const Value& cont, const Value& exn,
+                      const Value returns[]) {
     UNIMPLEMENTED();
   }
 
@@ -3885,8 +3940,12 @@ class TurboshaftGraphBuildingInterface
     UNIMPLEMENTED();
   }
 
+  MemoryRepresentation MemoryRepresentationFor(ValueType type) {
+    return MemoryRepresentation::FromMachineType(type.machine_type());
+  }
+
   void Suspend(FullDecoder* decoder, const TagIndexImmediate& imm,
-               const Value args[], const Value returns[]) {
+               const Value args[], Value returns[]) {
     V<WordPtr> root = __ LoadRootRegister();
     V<Word32> is_on_central_stack =
         __ Load(root, LoadOp::Kind::RawAligned(), MemoryRepresentation::Uint8(),
@@ -3897,6 +3956,18 @@ class TurboshaftGraphBuildingInterface
                          native_context);
       __ Unreachable();
     }
+
+    // Reserve a stack buffer, move the tag params there and pass it to the
+    // target stack.
+    const FunctionSig* sig = imm.tag->sig;
+    auto [size, alignment] = GetBufferSizeAndAlignmentFor(sig);
+    OpIndex arg_buffer = __ StackSlot(size, alignment);
+    IterateWasmFXArgBuffer(sig, [&](size_t index, int offset) {
+      DCHECK_EQ(args[index].type, sig->GetParam(index));
+      __ StoreOffHeap(arg_buffer, args[index].op,
+                      MemoryRepresentationFor(args[index].type), offset);
+    });
+
     V<FixedArray> instance_tags =
         LOAD_IMMUTABLE_INSTANCE_FIELD(trusted_instance_data(false), TagsTable,
                                       MemoryRepresentation::TaggedPointer());
@@ -3905,9 +3976,17 @@ class TurboshaftGraphBuildingInterface
     V<WasmContinuationObject> cont = __ WasmCallRuntime(
         decoder->zone(), Runtime::kWasmAllocateEmptyContinuation, {},
         native_context);
-    CallBuiltinThroughJumptable<BuiltinCallDescriptor::WasmFXSuspend>(
-        decoder, native_context, {wanted_tag, cont},
-        CheckForException::kCatchInThisFrame);
+    arg_buffer =
+        CallBuiltinThroughJumptable<BuiltinCallDescriptor::WasmFXSuspend>(
+            decoder, native_context, {wanted_tag, cont, arg_buffer},
+            CheckForException::kCatchInThisFrame);
+
+    // Unpack tag returns.
+    IterateWasmFXArgBuffer(sig, [&](size_t index, int offset) {
+      DCHECK_EQ(returns[index].type, sig->GetParam(index));
+      returns[index].op = this->Asm().LoadOffHeap(
+          arg_buffer, offset, MemoryRepresentationFor(sig->GetParam(index)));
+    });
   }
 
   void AtomicNotify(FullDecoder* decoder, const MemoryAccessImmediate& imm,
@@ -5157,6 +5236,8 @@ class TurboshaftGraphBuildingInterface
         (is_element
              ? decoder->module_->elem_segments[segment_imm.index].shared
              : decoder->module_->data_segments[segment_imm.index].shared);
+    const bool array_is_shared =
+        decoder->module_->type(array_imm.index).is_shared;
     // TODO(14616): Add DCHECK that array sharedness is equal to `shared`?
     V<WasmArray> result_value =
         CallBuiltinThroughJumptable<BuiltinCallDescriptor::WasmArrayNewSegment>(
@@ -5164,7 +5245,7 @@ class TurboshaftGraphBuildingInterface
             {__ Word32Constant(segment_imm.index), offset.op, length.op,
              __ SmiConstant(Smi::FromInt(is_element ? 1 : 0)),
              __ SmiConstant(Smi::FromInt(!shared_ && segment_is_shared)),
-             __ RttCanon(managed_object_maps(segment_is_shared),
+             __ RttCanon(managed_object_maps(array_is_shared),
                          array_imm.index)});
     result->op = __ AnnotateWasmType(result_value, result->type);
   }
@@ -8927,20 +9008,19 @@ class TurboshaftGraphBuildingInterface
     if (!deopts_enabled()) {
       inlinee_decoder.interface().disable_deopts();
     }
-    if (v8_flags.liftoff) {
-      if (inlining_decisions_ && inlining_decisions_->feedback_found()) {
-        if (inlining_decisions_->mode() == InliningTree::Mode::kVector) {
-          inlinee_decoder.interface().set_inlining_decisions(
-              inlining_decisions_
-                  ->function_calls()[feedback_slot_][feedback_case]);
-        } else {
-          inlinee_decoder.interface().set_inlining_decisions(
-              inlining_decisions_
-                  ->function_calls_map()[decoder->pc_relative_offset()]
-                                        [feedback_case]);
-        }
+    if (inlining_decisions_ && inlining_decisions_->feedback_found()) {
+      if (inlining_decisions_->mode() == InliningTree::Mode::kVector) {
+        inlinee_decoder.interface().set_inlining_decisions(
+            inlining_decisions_
+                ->function_calls()[feedback_slot_][feedback_case]);
+      } else {
+        inlinee_decoder.interface().set_inlining_decisions(
+            inlining_decisions_
+                ->function_calls_map()[decoder->pc_relative_offset()]
+                                      [feedback_case]);
       }
-    } else {
+    }
+    if (!v8_flags.liftoff) {
       no_liftoff_inlining_budget_ -= inlinee.code.length();
       inlinee_decoder.interface().set_no_liftoff_inlining_budget(
           no_liftoff_inlining_budget_);
@@ -9064,22 +9144,10 @@ class TurboshaftGraphBuildingInterface
     // is shared (which also implies the target cannot be shared either).
     if (shared_) return false;
 
-    // Configuration without Liftoff and feedback, e.g., for testing.
-    // TODO(manoskouk): What if compilation hints are present?
-    if (!v8_flags.liftoff) {
-      return size < no_liftoff_inlining_budget_ &&
-             // In a production configuration, `InliningTree` decides what to
-             // (not) inline, e.g., asm.js functions or to not exceed
-             // `kMaxInlinedCount`. But without Liftoff, we need to "manually"
-             // comply with these constraints here.
-             !is_asmjs_module(decoder->module_) &&
-             inlining_positions_->size() < InliningTree::kMaxInlinedCount;
-    }
-
-    // Default, production configuration: Liftoff collects feedback, which
-    // decides whether we inline:
     if (inlining_decisions_ && inlining_decisions_->feedback_found()) {
       if (inlining_decisions_->mode() == InliningTree::Mode::kVector) {
+        // Default, production configuration (without compilation hints):
+        // Liftoff collects feedback, which decides whether we inline:
         DCHECK_GT(inlining_decisions_->function_calls().size(), feedback_slot);
         // We should inline if at least one case for this feedback slot needs
         // to be inlined.
@@ -9092,12 +9160,15 @@ class TurboshaftGraphBuildingInterface
           }
         }
       } else {
+        // We found compilation hints for this function.
         DCHECK_EQ(inlining_decisions_->mode(), InliningTree::Mode::kMap);
         auto it = inlining_decisions_->function_calls_map().find(
             decoder->pc_relative_offset());
         if (it == inlining_decisions_->function_calls_map().end()) {
           return false;
         }
+        // We should inline if at least one case for this offset needs to be
+        // inlined.
         for (InliningTree* tree : it->second) {
           if (tree && tree->is_inlined()) {
             DCHECK(
@@ -9107,6 +9178,15 @@ class TurboshaftGraphBuildingInterface
         }
       }
       return false;
+    } else if (!v8_flags.liftoff) {
+      // Configuration without Liftoff and feedback, e.g., for testing.
+      return size < no_liftoff_inlining_budget_ &&
+             // In a production configuration, `InliningTree` decides what to
+             // (not) inline, e.g., asm.js functions or to not exceed
+             // `kMaxInlinedCount`. But without Liftoff, we need to "manually"
+             // comply with these constraints here.
+             !is_asmjs_module(decoder->module_) &&
+             inlining_positions_->size() < InliningTree::kMaxInlinedCount;
     }
     return false;
   }
@@ -9134,10 +9214,8 @@ class TurboshaftGraphBuildingInterface
       if (inlining_decisions_ && InliningTargetsProvidedByCustomSection()) {
         // We have to disable deopts in this case. Deopts need function feedback
         // for GetLiftoffFrameSize.
-        // TODO(manoskouk): This will be inherited by inlinee decoders. This is
-        // probably fine because this will mostly happen with eager compilation
-        // and at this point they will not have feedback either, i.e. they will
-        // also have the kMap mode.
+        // TODO(manoskouk): Find a way to enable deopts in the presence of
+        // compilation hints.
         deopts_enabled_ = false;
         return false;
       }

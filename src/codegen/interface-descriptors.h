@@ -912,11 +912,12 @@ class WasmFXResumeDescriptor final
  public:
   INTERNAL_DESCRIPTOR()
   SANDBOXING_MODE(kSandboxed)
-  DEFINE_RESULT_AND_PARAMETERS_NO_CONTEXT(0, kTargetStack)
-  DEFINE_RESULT_AND_PARAMETER_TYPES(MachineType::IntPtr())
+  DEFINE_RESULT_AND_PARAMETERS_NO_CONTEXT(0, kTargetStack, kArgBuffer)
+  DEFINE_RESULT_AND_PARAMETER_TYPES(MachineType::IntPtr(),
+                                    MachineType::IntPtr())
   DECLARE_DESCRIPTOR(WasmFXResumeDescriptor)
 
-  static constexpr int kMaxRegisterParams = 1;
+  static constexpr int kMaxRegisterParams = 2;
   static constexpr inline auto registers();
 };
 
@@ -924,12 +925,15 @@ class WasmFXSuspendDescriptor final
     : public StaticCallInterfaceDescriptor<WasmFXSuspendDescriptor> {
   INTERNAL_DESCRIPTOR()
   SANDBOXING_MODE(kSandboxed)
-  DEFINE_RESULT_AND_PARAMETERS(0, kTag, kContinuation)
-  DEFINE_RESULT_AND_PARAMETER_TYPES(MachineType::TaggedPointer(),
-                                    MachineType::TaggedPointer())
+  DEFINE_RESULT_AND_PARAMETERS(1, kTag, kContinuation, kArgBuffer)
+  DEFINE_RESULT_AND_PARAMETER_TYPES(
+      MachineType::IntPtr(),         // Result: arg buffer
+      MachineType::TaggedPointer(),  // Param 0: tag.
+      MachineType::TaggedPointer(),  // Param 1: continuation.
+      MachineType::IntPtr())         // Param 2: arg buffer.
   DECLARE_DESCRIPTOR(WasmFXSuspendDescriptor)
 
-  static constexpr int kMaxRegisterParams = 2;
+  static constexpr int kMaxRegisterParams = 3;
   static constexpr inline auto registers();
 };
 #endif
@@ -2628,6 +2632,17 @@ class RunMicrotasksDescriptor final
   DECLARE_DESCRIPTOR(RunMicrotasksDescriptor)
 
   static constexpr inline Register MicrotaskQueueRegister();
+};
+
+class Float64ToStringDescriptor final
+    : public StaticCallInterfaceDescriptor<Float64ToStringDescriptor> {
+ public:
+  INTERNAL_DESCRIPTOR()
+  SANDBOXING_MODE(kSandboxed)
+  DEFINE_PARAMETERS_NO_CONTEXT(kInput)
+  DEFINE_RESULT_AND_PARAMETER_TYPES(MachineType::AnyTagged(),  // result
+                                    MachineType::Float64())    // value
+  DECLARE_DESCRIPTOR(Float64ToStringDescriptor)
 };
 
 class WasmFloat32ToNumberDescriptor final

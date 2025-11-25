@@ -16,6 +16,7 @@
 #include "src/base/numbers/double.h"
 #include "src/codegen/compiler.h"
 #include "src/codegen/pending-optimization-table.h"
+#include "src/common/globals.h"
 #include "src/compiler-dispatcher/lazy-compile-dispatcher.h"
 #include "src/compiler-dispatcher/optimizing-compile-dispatcher.h"
 #include "src/debug/debug-evaluate.h"
@@ -166,50 +167,69 @@ RUNTIME_FUNCTION(Runtime_StringIsFlat) {
 
 RUNTIME_FUNCTION(Runtime_ConstructConsString) {
   HandleScope scope(isolate);
-  // This isn't exposed to fuzzers so doesn't need to handle invalid arguments.
-  DCHECK_EQ(args.length(), 2);
+  CHECK_UNLESS_FUZZING(args.length() == 2);
+  CHECK_UNLESS_FUZZING(IsString(args[0]));
+  CHECK_UNLESS_FUZZING(IsString(args[1]));
   DirectHandle<String> left = args.at<String>(0);
   DirectHandle<String> right = args.at<String>(1);
-
-  const bool is_one_byte =
-      left->IsOneByteRepresentation() && right->IsOneByteRepresentation();
-  const int length = left->length() + right->length();
-  return *isolate->factory()->NewConsString(left, right, length, is_one_byte);
+  CHECK_UNLESS_FUZZING(left->length() + right->length() >=
+                       ConsString::kMinLength);
+  CHECK_UNLESS_FUZZING(left->length() + right->length() <= String::kMaxLength);
+  return *isolate->factory()->NewConsString(left, right).ToHandleChecked();
 }
 
 RUNTIME_FUNCTION(Runtime_ConstructSlicedString) {
   HandleScope scope(isolate);
-  // This isn't exposed to fuzzers so doesn't need to handle invalid arguments.
-  DCHECK_EQ(args.length(), 2);
+  CHECK_UNLESS_FUZZING(args.length() == 2);
+  CHECK_UNLESS_FUZZING(IsString(args[0]));
+  CHECK_UNLESS_FUZZING(IsSmi(args[1]));
   Handle<String> string = args.at<String>(0);
-  int index = args.smi_value_at(1);
+  uint32_t index = args.smi_value_at(1);
 
-  CHECK_LT(index, string->length());
+  CHECK_UNLESS_FUZZING(index < string->length());
 
   DirectHandle<String> sliced_string =
       isolate->factory()->NewSubString(string, index, string->length());
-  CHECK(IsSlicedString(*sliced_string));
+  CHECK_UNLESS_FUZZING(IsSlicedString(*sliced_string));
   return *sliced_string;
 }
 
 RUNTIME_FUNCTION(Runtime_ConstructInternalizedString) {
   HandleScope scope(isolate);
-  // This isn't exposed to fuzzers so doesn't need to handle invalid arguments.
-  DCHECK_EQ(args.length(), 1);
+  CHECK_UNLESS_FUZZING(args.length() == 1);
+  CHECK_UNLESS_FUZZING(IsString(args[0]));
   Handle<String> string = args.at<String>(0);
-  CHECK(string->IsOneByteRepresentation());
   DirectHandle<String> internalized =
       isolate->factory()->InternalizeString(string);
-  CHECK(IsInternalizedString(*string));
+  // The argument was either already an internalized string or it is now a thin
+  // string to an internalized string.
+  // For shared strings, one of the following happens:
+  // 1) With `--shared-string-table` the string is inserted into the
+  //    `StringForwardingTable` to reduce the overhead of repeated
+  //    internalization.
+  // 2) Without `--shared-string-table` the original string gets copied on each
+  //    internalization inte the unshared heap and from there it needs to be
+  //    internalized each time.
+  // In either case, the input shared string does not change its shape on
+  // internalization.
+  CHECK(IsInternalizedString(*string) ||
+        (IsThinString(*string) &&
+         IsInternalizedString(Cast<ThinString>(*string)->actual())) ||
+        HeapLayout::InAnySharedSpace(*string));
+  CHECK(IsInternalizedString(*internalized));
   return *internalized;
 }
 
 RUNTIME_FUNCTION(Runtime_ConstructThinString) {
   HandleScope scope(isolate);
-  // This isn't exposed to fuzzers so doesn't need to handle invalid arguments.
-  DCHECK_EQ(args.length(), 1);
+  CHECK_UNLESS_FUZZING(args.length() == 1);
+  CHECK_UNLESS_FUZZING(IsString(args[0]));
   Handle<String> string = args.at<String>(0);
+  if (IsThinString(*string)) {
+    return *string;
+  }
   if (!IsConsString(*string)) {
+    CHECK_UNLESS_FUZZING(string->length() >= ConsString::kMinLength);
     string = isolate->factory()->NewConsString(
         isolate->factory()->empty_string(), string, string->length(),
         string->IsOneByteRepresentation(),
@@ -1298,7 +1318,7 @@ RUNTIME_FUNCTION(Runtime_DebugPrint) {
 
   Tagged<MaybeObject> maybe_object(*args.address_of_arg_at(0));
   DebugPrintImpl(maybe_object, *output_stream);
-  return args[0];
+  return ReadOnlyRoots(isolate).undefined_value();
 }
 
 RUNTIME_FUNCTION(Runtime_DebugPrintGeneric) {
@@ -1992,6 +2012,25 @@ RUNTIME_FUNCTION(Runtime_CompleteInobjectSlackTracking) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
+// Called from the %MajorGCForCompilerTesting intrinsic, this function triggers
+// a full (major) GC. Maglev and Turbofan/Turboshaft will recognize that it
+// doesn't have any side effects beyond triggering a GC, and it thus shouldn't
+// interfere too much with most optimizations (except a few like allocation
+// folding). If you need finer control over the GC, use the `gc()` function in
+// combination for --expose-gc, but optimizing compilers will treat that as a
+// generic runtime call with arbitrary side effects, which may impact various
+// optimizations.
+RUNTIME_FUNCTION(Runtime_MajorGCForCompilerTesting) {
+  HandleScope scope(isolate);
+  CHECK_UNLESS_FUZZING(v8_flags.allow_natives_syntax ||
+                       v8_flags.allow_natives_for_differential_fuzzing);
+  CHECK_UNLESS_FUZZING(args.length() == 0);
+
+  isolate->heap()->CollectGarbage(OLD_SPACE, GarbageCollectionReason::kTesting);
+
+  return ReadOnlyRoots(isolate).undefined_value();
+}
+
 RUNTIME_FUNCTION(Runtime_TurbofanStaticAssert) {
   SealHandleScope shs(isolate);
   // Always lowered to StaticAssert node in Turbofan, so we never get here in
@@ -2204,12 +2243,6 @@ RUNTIME_FUNCTION(Runtime_AtomicsSynchronizationPrimitiveNumWaitersForTesting) {
   DirectHandle<JSSynchronizationPrimitive> primitive =
       args.at<JSSynchronizationPrimitive>(0);
   return primitive->NumWaitersForTesting(isolate);
-}
-
-RUNTIME_FUNCTION(
-    Runtime_AtomicsSychronizationNumAsyncWaitersInIsolateForTesting) {
-  return Smi::FromInt(
-      static_cast<uint32_t>(isolate->async_waiter_queue_nodes().size()));
 }
 
 RUNTIME_FUNCTION(Runtime_GetWeakCollectionSize) {
@@ -2485,6 +2518,35 @@ RUNTIME_FUNCTION(Runtime_DebugPrintExternalPointerTableFilterTag) {
                                   return tag >= min_tag && tag < max_tag;
                                 });
   return ReadOnlyRoots(isolate).undefined_value();
+}
+
+RUNTIME_FUNCTION(Runtime_GetHoleNaNUpper) {
+  HandleScope scope(isolate);
+  CHECK_UNLESS_FUZZING(args.length() == 0);
+  return *isolate->factory()->NewNumberFromUint(kHoleNanUpper32);
+}
+
+RUNTIME_FUNCTION(Runtime_GetHoleNaNLower) {
+  HandleScope scope(isolate);
+  CHECK_UNLESS_FUZZING(args.length() == 0);
+  return *isolate->factory()->NewNumberFromUint(kHoleNanLower32);
+}
+
+RUNTIME_FUNCTION(Runtime_GetHoleNaN) {
+  HandleScope scope(isolate);
+  CHECK_UNLESS_FUZZING(args.length() == 0);
+  return *isolate->factory()->NewHeapNumberFromBits(kHoleNanInt64);
+}
+
+RUNTIME_FUNCTION(Runtime_GetUndefinedNaN) {
+  HandleScope scope(isolate);
+  CHECK_UNLESS_FUZZING(args.length() == 0);
+#if V8_ENABLE_UNDEFINED_DOUBLE
+  return *isolate->factory()->NewHeapNumberFromBits(kUndefinedNanInt64);
+#else
+  CHECK_UNLESS_FUZZING(false && "undefined NaNs are disabled via build flag");
+  return ReadOnlyRoots(isolate).undefined_value();
+#endif
 }
 
 }  // namespace internal

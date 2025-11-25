@@ -199,9 +199,8 @@ Tagged<Object> SharedFunctionInfo::GetTrustedData(
 template <typename T, IndirectPointerTag tag>
 Tagged<T> SharedFunctionInfo::GetTrustedData(IsolateForSandbox isolate) const {
   static_assert(tag != kUnknownIndirectPointerTag);
-  return HeapObject::CastExposedTrustedObjectByTag<tag>(
-      ReadMaybeEmptyTrustedPointerField<tag>(kTrustedFunctionDataOffset,
-                                             isolate, kAcquireLoad));
+  return HeapObject::ReadTrustedPointerField<tag>(kTrustedFunctionDataOffset,
+                                                  isolate, kAcquireLoad);
 }
 
 Tagged<Object> SharedFunctionInfo::GetUntrustedData() const {
@@ -237,6 +236,11 @@ bool SharedFunctionInfo::IsSloppyNormalJSFunction() const {
   // TODO(dcarney): Fix the empty scope and push this down into
   //                ScopeInfo::IsSloppyNormalJSFunction.
   return kind() == FunctionKind::kNormalFunction && is_sloppy(language_mode());
+}
+
+uint32_t SharedFunctionInfo::unused_parameter_bits() const {
+  DCHECK_EQ(scope_info(kAcquireLoad)->scope_type(), ScopeType::FUNCTION_SCOPE);
+  return scope_info(kAcquireLoad)->unused_parameter_bits();
 }
 
 bool SharedFunctionInfo::CanOnlyAccessFixedFormalParameters() const {

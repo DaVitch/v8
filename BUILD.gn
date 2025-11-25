@@ -457,7 +457,8 @@ declare_args() {
   v8_enable_experimental_tsa_builtins = false
 
   # Use the encoding of undefined in double values.
-  v8_enable_undefined_double = false
+  # Only enabled for fuzzing in V8 Fuzzilli builds
+  v8_enable_undefined_double = v8_fuzzilli
 
   v8_dcheck_always_on = dcheck_always_on
 
@@ -492,6 +493,9 @@ declare_args() {
 
   # add instrumentation for Dumpling differential fuzzing
   v8_dumpling = false
+
+  # Enable compilation of riscv32.
+  v8_riscv_enable_deprecated_riscv32 = false
 }
 
 # Derived defaults.
@@ -601,7 +605,7 @@ if (v8_enable_external_code_space == "") {
       v8_enable_pointer_compression &&
       v8_enable_pointer_compression_shared_cage &&
       (v8_current_cpu == "x64" || v8_current_cpu == "arm64" ||
-       v8_current_cpu == "loong64")
+       v8_current_cpu == "loong64" || v8_current_cpu == "riscv64")
 }
 if (v8_enable_sparkplug == "") {
   v8_enable_sparkplug = !v8_jitless
@@ -981,6 +985,7 @@ external_v8_defines = [
   "V8_DEPRECATION_WARNINGS",
   "V8_IMMINENT_DEPRECATION_WARNINGS",
   "V8_USE_PERFETTO",
+  "V8_USE_PERFETTO_JSON_EXPORT",
   "V8_USE_PERFETTO_SDK",
   "V8_MAP_PACKING",
   "V8_IS_TSAN",
@@ -1029,6 +1034,9 @@ if (v8_imminent_deprecation_warnings) {
 }
 if (v8_use_perfetto) {
   enabled_external_v8_defines += [ "V8_USE_PERFETTO" ]
+}
+if (v8_use_perfetto_json_export) {
+  enabled_external_v8_defines += [ "V8_USE_PERFETTO_JSON_EXPORT" ]
 }
 if (v8_use_perfetto_sdk) {
   enabled_external_v8_defines += [ "V8_USE_PERFETTO_SDK" ]
@@ -1183,8 +1191,7 @@ config("features") {
   if (v8_enable_pointer_compression) {
     if (v8_enable_pointer_compression_shared_cage) {
       defines += [
-        # TODO(442942399): Re-enable after bug has been addressed.
-        # "V8_CONTIGUOUS_COMPRESSED_RO_SPACE",
+        "V8_CONTIGUOUS_COMPRESSED_RO_SPACE",
         "V8_CONTIGUOUS_COMPRESSED_RO_SPACE_SIZE_MB=${v8_contiguous_compressed_ro_space_size_mb}",
       ]
     } else {
@@ -1336,6 +1343,9 @@ config("features") {
   if (v8_dumpling) {
     defines += [ "V8_DUMPLING" ]
   }
+  if (v8_riscv_enable_deprecated_riscv32) {
+    defines += [ "V8_RISCV_ENABLE_DEPRECATED_RISCV32" ]
+  }
   if (v8_enable_fuzztest) {
     defines += [ "V8_ENABLE_FUZZTEST" ]
   }
@@ -1469,7 +1479,6 @@ config("features") {
   if (v8_enable_undefined_double) {
     defines += [ "V8_ENABLE_UNDEFINED_DOUBLE" ]
   }
-  defines += [ "V8_ENABLE_LEAPTIERING" ]
   if (v8_enable_partition_alloc) {
     defines += [ "V8_ENABLE_PARTITION_ALLOC" ]
   }
@@ -1599,10 +1608,9 @@ config("toolchain") {
     }
   }
 
-  # Under simulator build, compiler will not provide __riscv_xlen. Define here
   if (v8_current_cpu == "riscv64" || v8_current_cpu == "riscv32") {
     if (v8_target_is_simulator) {
-      defines += [ "_RISCV_TARGET_SIMULATOR" ]
+      defines += [ "RISCV_TARGET_SIMULATOR" ]
     }
     if (riscv_use_rvv || v8_target_is_simulator) {
       defines += [ "CAN_USE_RVV_INSTRUCTIONS" ]
@@ -1617,10 +1625,19 @@ config("toolchain") {
     if (riscv_use_zbs) {
       defines += [ "__riscv_zbs" ]
     }
+    defines += [ "RISCV_CODE_ALIGNMENT=${riscv_code_alignment}" ]
+    defines +=
+        [ "RISCV_CONSTANT_POOL_ALIGNMENT=${riscv_constant_pool_alignment}" ]
   }
+
   if (v8_current_cpu == "riscv64") {
     defines += [ "V8_TARGET_ARCH_RISCV64" ]
-    defines += [ "__riscv_xlen=64" ]
+
+    # When building the simulator, the compiler does not provide __riscv_xlen,
+    # so we explicitly define it here.
+    if (v8_target_is_simulator) {
+      defines += [ "__riscv_xlen=64" ]
+    }
     if (!is_clang) {
       cflags += [ "-ffp-contract=off" ]
     }
@@ -1631,7 +1648,12 @@ config("toolchain") {
 
   if (v8_current_cpu == "riscv32") {
     defines += [ "V8_TARGET_ARCH_RISCV32" ]
-    defines += [ "__riscv_xlen=32" ]
+
+    # When building the simulator, the compiler does not provide __riscv_xlen,
+    # so we explicitly define it here.
+    if (v8_target_is_simulator) {
+      defines += [ "__riscv_xlen=32" ]
+    }
   }
 
   if (v8_current_cpu == "x86") {
@@ -3709,6 +3731,7 @@ v8_header_set("v8_internal_headers") {
     "src/compiler/turboshaft/late-load-elimination-reducer.h",
     "src/compiler/turboshaft/layered-hash-map.h",
     "src/compiler/turboshaft/load-store-simplification-reducer.h",
+    "src/compiler/turboshaft/load-store-verification-reducer.h",
     "src/compiler/turboshaft/loop-finder.h",
     "src/compiler/turboshaft/loop-peeling-phase.h",
     "src/compiler/turboshaft/loop-peeling-reducer.h",
@@ -4260,6 +4283,8 @@ v8_header_set("v8_internal_headers") {
     "src/objects/transitions.h",
     "src/objects/trusted-object-inl.h",
     "src/objects/trusted-object.h",
+    "src/objects/trusted-pointer-inl.h",
+    "src/objects/trusted-pointer.h",
     "src/objects/turbofan-types-inl.h",
     "src/objects/turbofan-types.h",
     "src/objects/turboshaft-types-inl.h",
@@ -4530,6 +4555,9 @@ v8_header_set("v8_internal_headers") {
       "src/maglev/maglev-pipeline-statistics.h",
       "src/maglev/maglev-post-hoc-optimizations-processors.h",
       "src/maglev/maglev-pre-regalloc-codegen-processors.h",
+      "src/maglev/maglev-range-analysis.h",
+      "src/maglev/maglev-range-verification.h",
+      "src/maglev/maglev-range.h",
       "src/maglev/maglev-reducer-inl.h",
       "src/maglev/maglev-reducer.h",
       "src/maglev/maglev-regalloc-data.h",
@@ -5306,6 +5334,7 @@ if (!v8_enable_maglev) {
     "src/maglev/maglev-ir.cc",
     "src/maglev/maglev-known-node-aspects.cc",
     "src/maglev/maglev-phi-representation-selector.cc",
+    "src/maglev/maglev-range-verification.cc",
     "src/maglev/maglev-truncation.cc",
   ]
 }
@@ -6050,6 +6079,7 @@ v8_source_set("v8_base_without_compiler") {
       "src/maglev/maglev-known-node-aspects.cc",
       "src/maglev/maglev-phi-representation-selector.cc",
       "src/maglev/maglev-pipeline-statistics.cc",
+      "src/maglev/maglev-range-verification.cc",
       "src/maglev/maglev-regalloc.cc",
       "src/maglev/maglev-truncation.cc",
       "src/maglev/maglev.cc",

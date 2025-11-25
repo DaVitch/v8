@@ -1117,19 +1117,15 @@ class MachineLoweringReducer : public Next {
     UNREACHABLE();
   }
 
-  V<JSPrimitive> REDUCE(ConvertUntaggedToJSPrimitiveOrDeopt)(
+  V<JSPrimitive> REDUCE(ConvertWordToSmiOrDeopt)(
       V<Untagged> input, V<FrameState> frame_state,
-      ConvertUntaggedToJSPrimitiveOrDeoptOp::JSPrimitiveKind kind,
       RegisterRepresentation input_rep,
-      ConvertUntaggedToJSPrimitiveOrDeoptOp::InputInterpretation
-          input_interpretation,
+      ConvertWordToSmiOrDeoptOp::InputInterpretation input_interpretation,
       const FeedbackSource& feedback) {
-    DCHECK_EQ(kind,
-              ConvertUntaggedToJSPrimitiveOrDeoptOp::JSPrimitiveKind::kSmi);
     if (input_rep == RegisterRepresentation::Word32()) {
       V<Word32> input_w32 = V<Word32>::Cast(input);
       if (input_interpretation ==
-          ConvertUntaggedToJSPrimitiveOrDeoptOp::InputInterpretation::kSigned) {
+          ConvertWordToSmiOrDeoptOp::InputInterpretation::kSigned) {
         if constexpr (SmiValuesAre32Bits()) {
           return __ TagSmi(input_w32);
         } else {
@@ -1140,8 +1136,8 @@ class MachineLoweringReducer : public Next {
           return __ BitcastWord32ToSmi(__ template Projection<0>(test));
         }
       } else {
-        DCHECK_EQ(input_interpretation, ConvertUntaggedToJSPrimitiveOrDeoptOp::
-                                            InputInterpretation::kUnsigned);
+        DCHECK_EQ(input_interpretation,
+                  ConvertWordToSmiOrDeoptOp::InputInterpretation::kUnsigned);
         V<Word32> check = __ Uint32LessThanOrEqual(input_w32, Smi::kMaxValue);
         __ DeoptimizeIfNot(check, frame_state, DeoptimizeReason::kLostPrecision,
                            feedback);
@@ -1151,7 +1147,7 @@ class MachineLoweringReducer : public Next {
       DCHECK_EQ(input_rep, RegisterRepresentation::Word64());
       V<Word64> input_w64 = V<Word64>::Cast(input);
       if (input_interpretation ==
-          ConvertUntaggedToJSPrimitiveOrDeoptOp::InputInterpretation::kSigned) {
+          ConvertWordToSmiOrDeoptOp::InputInterpretation::kSigned) {
         V<Word32> i32 = __ TruncateWord64ToWord32(input_w64);
         V<Word32> check = __ Word64Equal(__ ChangeInt32ToInt64(i32), input_w64);
         __ DeoptimizeIfNot(check, frame_state, DeoptimizeReason::kLostPrecision,
@@ -1165,8 +1161,8 @@ class MachineLoweringReducer : public Next {
           return __ BitcastWord32ToSmi(__ template Projection<0>(test));
         }
       } else {
-        DCHECK_EQ(input_interpretation, ConvertUntaggedToJSPrimitiveOrDeoptOp::
-                                            InputInterpretation::kUnsigned);
+        DCHECK_EQ(input_interpretation,
+                  ConvertWordToSmiOrDeoptOp::InputInterpretation::kUnsigned);
         V<Word32> check = __ Uint64LessThanOrEqual(
             input_w64, static_cast<uint64_t>(Smi::kMaxValue));
         __ DeoptimizeIfNot(check, frame_state, DeoptimizeReason::kLostPrecision,
@@ -1694,7 +1690,14 @@ class MachineLoweringReducer : public Next {
 #endif
 
 #if V8_STATIC_ROOTS_BOOL
-        if (v8_flags.unmap_holes && !v8_flags.turbolev) {
+        // On static roots builds, we replace loads of hole maps by Unreachable.
+        // Given that the current operation may still be reachable, we make sure
+        // to skip the map load if the input is a hole. This doesn't work on
+        // non-static roots builds, since there we would have to load the map to
+        // figure out if the object is the hole (and so we wouldn't want this
+        // specific load map to be replaced by unreachable).
+
+        if (!v8_flags.turbolev) {
           // TruncateJSPrimitiveToUntagged(Object -> Bit) is pure in Turbofan,
           // and can thus float above hole checks. This will lead to either
           // segfaulting at runtime because we try to read the map of the hole
@@ -1706,9 +1709,7 @@ class MachineLoweringReducer : public Next {
             GOTO(done, 0);
           }
         }
-#else
-        DCHECK(!v8_flags.unmap_holes);
-#endif  // V8_STATIC_ROOTS_BOOL
+#endif
 
         // Load the map of {object}.
         V<Map> map = __ LoadMapField(object);
@@ -2657,14 +2658,17 @@ class MachineLoweringReducer : public Next {
 
 #ifdef V8_INTL_SUPPORT
   V<String> REDUCE(StringToCaseIntl)(V<String> string,
-                                     StringToCaseIntlOp::Kind kind) {
+                                     V<FrameState> frame_state,
+                                     V<Context> context,
+                                     StringToCaseIntlOp::Kind kind,
+                                     LazyDeoptOnThrow lazy_deopt_on_throw) {
     if (kind == StringToCaseIntlOp::Kind::kLower) {
       return __ template CallBuiltin<builtin::StringToLowerCaseIntl>(
-          __ NoContextConstant(), {.string = string});
+          frame_state, context, {.string = string}, lazy_deopt_on_throw);
     } else {
       DCHECK_EQ(kind, StringToCaseIntlOp::Kind::kUpper);
       return __ template CallRuntime<runtime::StringToUpperCaseIntl>(
-          __ NoContextConstant(), {.string = string});
+          frame_state, context, {.string = string}, lazy_deopt_on_throw);
     }
   }
 #endif  // V8_INTL_SUPPORT
@@ -3491,9 +3495,11 @@ class MachineLoweringReducer : public Next {
   }
 
   V<None> REDUCE(RuntimeAbort)(AbortReason reason) {
-    __ template CallRuntime<runtime::Abort>(
-        __ NoContextConstant(),
-        {.messageOrMessageId = __ SmiConstant(Smi::FromEnum(reason))});
+    if (!v8_flags.trap_on_abort) {
+      __ template CallRuntime<runtime::Abort>(
+          __ NoContextConstant(),
+          {.messageOrMessageId = __ SmiConstant(Smi::FromEnum(reason))});
+    }
     // RuntimeAbort exits the function and should thus be a block terminator,
     // but we currently don't allow Simplified operations to be block
     // terminators. We thus manually add an Unreachable after it.
@@ -3834,8 +3840,13 @@ class MachineLoweringReducer : public Next {
         __ template Allocate<SeqTwoByteString>(
             SeqTwoByteString::SizeFor(length), type, kTaggedAligned);
     // Set padding to 0.
-    __ Initialize(string, __ IntPtrConstant(0),
-                  MemoryRepresentation::TaggedSigned(),
+    __ Initialize(string,
+#if V8_COMPRESS_POINTERS
+                  __ Word32Constant(0), MemoryRepresentation::Uint32(),
+#else
+                  __ WordPtrConstant(0), MemoryRepresentation::UintPtr(),
+
+#endif
                   WriteBarrierKind::kNoWriteBarrier,
                   SeqTwoByteString::SizeFor(length) - kObjectAlignment);
     // Initialize remaining fields.

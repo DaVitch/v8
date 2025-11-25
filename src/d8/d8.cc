@@ -803,19 +803,19 @@ class ModuleEmbedderData {
   }
 
   static ModuleType ModuleTypeFromImportSpecifierAndAttributes(
-      Local<Context> context, const std::string& specifier,
-      Local<FixedArray> import_attributes, bool hasPositions) {
+      const std::string& specifier, Local<FixedArray> import_attributes,
+      bool hasPositions) {
     Isolate* isolate = Isolate::GetCurrent();
     const int kV8AssertionEntrySize = hasPositions ? 3 : 2;
     for (int i = 0; i < import_attributes->Length();
          i += kV8AssertionEntrySize) {
       Local<String> v8_assertion_key =
-          import_attributes->Get(context, i).As<v8::String>();
+          import_attributes->Get(i).As<v8::String>();
       std::string assertion_key = ToSTLString(isolate, v8_assertion_key);
 
       if (assertion_key == "type") {
         Local<String> v8_assertion_value =
-            import_attributes->Get(context, i + 1).As<String>();
+            import_attributes->Get(i + 1).As<String>();
         std::string assertion_value = ToSTLString(isolate, v8_assertion_value);
         if (assertion_value == "json") {
           return ModuleType::kJSON;
@@ -894,11 +894,11 @@ bool IsValidHostDefinedOptions(Local<Context> context, Local<Data> options,
   Local<FixedArray> array = options.As<FixedArray>();
   if (array->Length() != kHostDefinedOptionsLength) return false;
   uint32_t magic = 0;
-  if (!array->Get(context, 0).As<Value>()->Uint32Value(context).To(&magic)) {
+  if (!array->Get(0).As<Value>()->Uint32Value(context).To(&magic)) {
     return false;
   }
   if (magic != kHostDefinedOptionsMagicConstant) return false;
-  return array->Get(context, 1).As<String>()->StrictEquals(resource_name);
+  return array->Get(1).As<String>()->StrictEquals(resource_name);
 }
 
 class D8WasmAsyncResolvePromiseTask : public v8::Task {
@@ -1211,7 +1211,7 @@ MaybeLocal<Module> ResolveModuleCallback(Local<Context> context,
       NormalizeModuleSpecifier(stl_specifier, DirName(referrer_specifier));
   ModuleType module_type =
       ModuleEmbedderData::ModuleTypeFromImportSpecifierAndAttributes(
-          context, stl_specifier, import_attributes, true);
+          stl_specifier, import_attributes, true);
   return module_data->GetModule(std::make_pair(absolute_path, module_type));
 }
 
@@ -1228,7 +1228,7 @@ MaybeLocal<Object> ResolveModuleSourceCallback(
       NormalizeModuleSpecifier(stl_specifier, DirName(referrer_specifier));
   ModuleType module_type =
       ModuleEmbedderData::ModuleTypeFromImportSpecifierAndAttributes(
-          context, stl_specifier, import_attributes, true);
+          stl_specifier, import_attributes, true);
   return module_data->GetModuleSource(
       std::make_pair(absolute_path, module_type));
 }
@@ -1402,7 +1402,7 @@ MaybeLocal<Module> Shell::FetchModuleTree(Local<Module> referrer,
   Local<FixedArray> module_requests = module->GetModuleRequests();
   for (int i = 0, length = module_requests->Length(); i < length; ++i) {
     Local<ModuleRequest> module_request =
-        module_requests->Get(context, i).As<ModuleRequest>();
+        module_requests->Get(i).As<ModuleRequest>();
     std::string specifier =
         ToSTLString(isolate, module_request->GetSpecifier());
     std::string normalized_specifier =
@@ -1410,7 +1410,7 @@ MaybeLocal<Module> Shell::FetchModuleTree(Local<Module> referrer,
     Local<FixedArray> import_attributes = module_request->GetImportAttributes();
     ModuleType request_module_type =
         ModuleEmbedderData::ModuleTypeFromImportSpecifierAndAttributes(
-            context, normalized_specifier, import_attributes, true);
+            normalized_specifier, import_attributes, true);
 
     if (request_module_type == ModuleType::kInvalid) {
       ThrowError(isolate, "Invalid module type was asserted");
@@ -1717,7 +1717,7 @@ void Shell::DoHostImportModuleDynamically(void* data) {
 
     ModuleType module_type =
         ModuleEmbedderData::ModuleTypeFromImportSpecifierAndAttributes(
-            realm, specifier, import_attributes, false);
+            specifier, import_attributes, false);
 
     if (module_type == ModuleType::kInvalid) {
       ThrowError(isolate, "Invalid module type was asserted");
@@ -3028,30 +3028,35 @@ void Shell::WasmDeserializeModule(
       i::WasmJs::CompileTimeImportsFromArgument(
           Utils::OpenDirectHandle(*info[2]), i_isolate, enabled_features);
 
-  i::DirectHandle<i::JSArrayBuffer> buffer =
-      i::Cast<i::JSArrayBuffer>(Utils::OpenHandle(*info[0]));
-  i::DirectHandle<i::JSTypedArray> wire_bytes =
-      i::Cast<i::JSTypedArray>(Utils::OpenHandle(*info[1]));
+  Local<ArrayBuffer> serialized_bytes_buffer = info[0].As<ArrayBuffer>();
+  Local<ArrayBufferView> wire_bytes_view = info[1].As<ArrayBufferView>();
+
   // Note: These checks must be executed *after* evaluating compile time
   // imports, as that calls back into JS and can detach buffers.
-  if (buffer->was_detached()) {
+  if (serialized_bytes_buffer->WasDetached()) {
     ThrowError(isolate, "First argument is detached");
     return;
   }
-  if (wire_bytes->WasDetached()) {
+  if (wire_bytes_view->Buffer()->WasDetached()) {
     ThrowError(isolate, "Second argument's buffer is detached");
     return;
   }
 
-  i::DirectHandle<i::JSArrayBuffer> wire_bytes_buffer =
-      wire_bytes->GetBuffer(i_isolate);
-  base::Vector<const uint8_t> wire_bytes_vec{
-      reinterpret_cast<const uint8_t*>(wire_bytes_buffer->backing_store()) +
-          wire_bytes->byte_offset(),
-      wire_bytes->byte_length()};
-  base::Vector<uint8_t> buffer_vec{
-      reinterpret_cast<uint8_t*>(buffer->backing_store()),
-      buffer->byte_length()};
+  // Make copies of the provided buffers, to avoid manipulation during
+  // deserialization.
+  // For the wire bytes, we need a new copy anyway for storing in the new
+  // NativeModule (if it does not come from the cache).
+  // TODO(clemensb): `DeserializeNativeModule` already does a copy; avoid one of
+  // them (same in the streaming decoder).
+  base::OwnedVector<const uint8_t> wire_bytes_vec = ([&] {
+    size_t length = wire_bytes_view->ByteLength();
+    auto vec = base::OwnedVector<uint8_t>::NewForOverwrite(length);
+    CHECK_EQ(length, wire_bytes_view->CopyContents(vec.data(), length));
+    return vec;  // `OwnedVector<uint8_t>` to `OwnedVector<const uint8_t>`.
+  })();
+  base::OwnedVector<uint8_t> serialized_bytes_vec = base::OwnedCopyOf(
+      reinterpret_cast<uint8_t*>(serialized_bytes_buffer->Data()),
+      serialized_bytes_buffer->ByteLength());
 
   // Check that we only try to deserialize bytes that we previously produced via
   // serialization.
@@ -3059,8 +3064,10 @@ void Shell::WasmDeserializeModule(
   // fuzzers from passing manipulated bytes (or bytes that do not match the wire
   // bytes) in regular fuzzing.
   {
-    size_t hash =
-        base::Hasher{}.AddRange(wire_bytes_vec).AddRange(buffer_vec).hash();
+    size_t hash = base::Hasher{}
+                      .AddRange(wire_bytes_vec.as_vector())
+                      .AddRange(serialized_bytes_vec.as_vector())
+                      .hash();
     base::MutexGuard mutex_guard(Shell::wasm_serialized_bytes_mutex_.Pointer());
     if (!Shell::wasm_serialized_bytes_hashes_.count(hash)) {
       ThrowError(isolate, "Trying to deserialize manipulated bytes");
@@ -3074,20 +3081,20 @@ void Shell::WasmDeserializeModule(
   // empty buffer. We thus have to accept this empty buffer again here, and
   // produce a valid module.
   if (i::v8_flags.correctness_fuzzer_suppressions) {
-    CHECK(buffer_vec.empty());
+    CHECK(serialized_bytes_vec.empty());
     i::wasm::ErrorThrower thrower{i_isolate, "d8.wasm.deserializeModule"};
     module_object =
         i::wasm::GetWasmEngine()
             ->SyncCompile(i_isolate, enabled_features, compile_time_imports,
-                          &thrower, base::OwnedCopyOf(wire_bytes_vec))
+                          &thrower, std::move(wire_bytes_vec))
             .ToHandleChecked();
     DCHECK(!thrower.error());
   } else {
     // Note that {wasm::DeserializeNativeModule} will allocate. We assume the
     // JSArrayBuffer backing store doesn't get relocated.
-    if (!i::wasm::DeserializeNativeModule(i_isolate, enabled_features,
-                                          buffer_vec, wire_bytes_vec,
-                                          compile_time_imports, {})
+    if (!i::wasm::DeserializeNativeModule(
+             i_isolate, enabled_features, serialized_bytes_vec.as_vector(),
+             wire_bytes_vec.as_vector(), compile_time_imports, {})
              .ToHandle(&module_object)) {
       // Deserialization failed, probably because of mismatched compile time
       // imports. Invalid wire bytes are unlikely because of the hash check
@@ -6381,7 +6388,7 @@ bool Shell::SetOptions(int argc, char* argv[]) {
           } else {
             base::OS::Abort();
           }
-        };
+        };  // NOLINT(readability/braces)
     // The --disallow-unsafe-flags is meant to block known unsafe configurations
     // and mitigate spurious reports due invalid flag combinations/values. To
     // prevent AI agents and/or fuzzers from using a new unsafe flag, add it to
@@ -7088,8 +7095,14 @@ int Shell::Main(int argc, char* argv[]) {
     tracing = std::make_unique<platform::tracing::TracingController>();
 
     if (!options.enable_etw_stack_walking) {
-      const char* trace_path =
-          options.trace_path ? options.trace_path : "v8_trace.json";
+      const char* trace_path = options.trace_path ? options.trace_path :
+      // Default to protobuf format when Perfetto is used and without json
+      // export.
+#if defined(V8_USE_PERFETTO) && !defined(V8_USE_PERFETTO_JSON_EXPORT)
+                                                  "v8_trace.pb";
+#else
+                                                  "v8_trace.json";
+#endif  // defined(V8_USE_PERFETTO) && !defined(V8_USE_PERFETTO_JSON_EXPORT)
       trace_file.open(trace_path);
       if (!trace_file.good()) {
         printf("Cannot open trace file '%s' for writing: %s.\n", trace_path,

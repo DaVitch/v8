@@ -72,6 +72,7 @@ class MaglevGraphOptimizer {
   compiler::JSHeapBroker* broker() const;
 
   std::optional<Range> GetRange(ValueNode* node);
+  bool IsRangeLessEqual(ValueNode* lhs, ValueNode* rhs);
 
   // Iterates the deopt frames unwrapping its inputs, ie, removing Identity or
   // ReturnedValue nodes.
@@ -84,7 +85,7 @@ class MaglevGraphOptimizer {
 
   // Returns a variant of the node with the value representation given. It
   // returns nullptr if we need to emit a tagged conversion.
-  ValueNode* GetUntaggedValueWithRepresentation(
+  MaybeReduceResult GetUntaggedValueWithRepresentation(
       ValueNode* node, UseRepresentation repr,
       std::optional<TaggedToFloat64ConversionType> conversion_type);
 

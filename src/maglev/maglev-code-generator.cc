@@ -636,6 +636,7 @@ class ExceptionHandlerTrampolineBuilder {
         case ValueRepresentation::kInt32:
         case ValueRepresentation::kUint32:
         case ValueRepresentation::kIntPtr:
+        case ValueRepresentation::kRawPtr:
           materialising_moves->emplace_back(target, source);
           break;
         case ValueRepresentation::kFloat64:
@@ -1451,6 +1452,7 @@ class MaglevFrameTranslationBuilder {
             operand.GetDoubleRegister());
         break;
       case ValueRepresentation::kShiftedInt53:
+      case ValueRepresentation::kRawPtr:
       case ValueRepresentation::kNone:
         UNREACHABLE();
     }
@@ -1479,6 +1481,7 @@ class MaglevFrameTranslationBuilder {
         translation_array_builder_->StoreHoleyDoubleStackSlot(stack_slot);
         break;
       case ValueRepresentation::kShiftedInt53:
+      case ValueRepresentation::kRawPtr:
       case ValueRepresentation::kNone:
         UNREACHABLE();
     }
@@ -1582,8 +1585,9 @@ class MaglevFrameTranslationBuilder {
     } else {
       translation_array_builder_->BeginCapturedObject(object->slot_count());
     }
-    auto callback = [&](ValueNode* node, const vobj::Field& desc) {
+    auto callback = [&](ValueNode* node, const vobj::Field& desc) -> bool {
       BuildNestedValue(node, input_location, virtual_objects);
+      return true;
     };
     object->ForEachSlot(callback,
                         VirtualObject::ForEachSlotIterationMode::kForDeopt);
@@ -1877,7 +1881,9 @@ bool MaglevCodeGenerator::EmitDeopts() {
     if (masm_.compilation_info()->collect_source_positions() ||
         AlwaysPreserveDeoptReason(deopt_info->reason())) {
       __ RecordDeoptReason(deopt_info->reason(), 0,
-                           deopt_info->top_frame().GetSourcePosition(),
+                           masm_.compilation_info()->collect_source_positions()
+                               ? deopt_info->top_frame().GetSourcePosition()
+                               : SourcePosition::Unknown(),
                            deopt_index);
     }
 

@@ -1844,7 +1844,8 @@ void InstanceBuilder::SanitizeImports() {
       continue;
     }
 
-    if (import.kind == kExternalFunction) {
+    if (import.kind == kExternalFunction ||
+        import.kind == kExternalExactFunction) {
       WellKnownImport wki = well_known_imports.get(import.index);
       if (IsCompileTimeImport(wki)) {
         DirectHandle<JSFunction> fun =
@@ -1912,6 +1913,7 @@ bool InstanceBuilder::ProcessImportedFunction(int import_index,
       GetTypeCanonicalizer()->LookupFunctionSignature(sig_index);
   CanonicalValueType expected_type = CanonicalValueType::Ref(
       sig_index, function_is_shared, RefTypeKind::kFunction);
+  if (wasm_func.exact) expected_type = expected_type.AsExact();
   ResolvedWasmImport resolved(trusted_instance_data, func_index, callable,
                               expected_type, expected_sig, preknown_import);
   if (resolved.well_known_status() != WellKnownImport::kGeneric &&
@@ -2295,7 +2297,8 @@ bool InstanceBuilder::ProcessImports() {
     DirectHandle<Object> value = sanitized_imports_[index];
 
     switch (import.kind) {
-      case kExternalFunction: {
+      case kExternalFunction:
+      case kExternalExactFunction: {
         uint32_t func_index = import.index;
 #if DEBUG
         DCHECK_EQ(num_imported_functions, func_index);
@@ -2653,6 +2656,7 @@ void InstanceBuilder::ProcessExports() {
         value = wrapper;
         break;
       }
+      case kExternalExactFunction:
       default:
         UNREACHABLE();
     }

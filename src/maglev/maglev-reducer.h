@@ -172,6 +172,8 @@ inline ReduceResult MaybeReduceResult::Checked() { return ReduceResult(*this); }
     variable = res.value()->Cast<T>();                                 \
   } while (false)
 
+// TODO(dmercadier): .Cast the result to the type of variable to avoid requiring
+// callers to use a generic `Node*` type for {variable}.
 #define GET_NODE_OR_ABORT(variable, result) \
   do {                                      \
     MaybeReduceResult res = (result);       \
@@ -294,8 +296,20 @@ class MaglevReducer {
 
   ReduceResult EmitUnconditionalDeopt(DeoptimizeReason reason);
 
-  compiler::OptionalHeapObjectRef TryGetConstant(
-      ValueNode* node, ValueNode** constant_node = nullptr);
+  template <class T>
+  compiler::OptionalRef<typename compiler::ref_traits<T>::ref_type>
+  TryGetConstant(ValueNode* node, ValueNode** constant_node = nullptr) {
+    compiler::OptionalHeapObjectRef ref =
+        TryGetHeapObjectConstant(node, constant_node);
+    if constexpr (std::is_same_v<T, HeapObject>) {
+      return ref;
+    }
+    if (!ref.has_value() || !ref->Is<T>()) return {};
+    return ref->As<T>();
+  }
+  compiler::OptionalHeapObjectRef TryGetHeapObjectConstant(
+      ValueNode* node, ValueNode** constant_node);
+
   std::optional<int32_t> TryGetInt32Constant(ValueNode* value);
   std::optional<uint32_t> TryGetUint32Constant(ValueNode* value);
   std::optional<ShiftedInt53> TryGetShiftedInt53Constant(ValueNode* value);
@@ -321,15 +335,18 @@ class MaglevReducer {
 
   // Get a tagged representation node whose value is equivalent to the given
   // node.
-  ValueNode* GetTaggedValue(ValueNode* value,
-                            UseReprHintRecording record_use_repr_hint =
-                                UseReprHintRecording::kRecord);
+  ReduceResult GetTaggedValue(ValueNode* value,
+                              UseReprHintRecording record_use_repr_hint =
+                                  UseReprHintRecording::kRecord);
 
   // Get an Int32 representation node whose value is equivalent to the given
   // node.
   //
   // Deopts if the value is not exactly representable as an Int32.
   ValueNode* GetInt32(ValueNode* value, bool can_be_heap_number = false);
+
+  // This does not emit any conversion.
+  ValueNode* TryGetInt32(ValueNode* value);
 
   // Get a ShiftInt53 representation node whose value is equivalent to the given
   // node.
@@ -346,23 +363,30 @@ class MaglevReducer {
   ValueNode* GetTruncatedInt32ForToNumber(ValueNode* value,
                                           NodeType allowed_input_type);
 
-  ValueNode* GetFloat64OrHoleyFloat64Impl(ValueNode* value,
-                                          UseRepresentation use_rep,
-                                          NodeType allowed_input_type);
+  ReduceResult GetFloat64OrHoleyFloat64Impl(ValueNode* value,
+                                            UseRepresentation use_rep,
+                                            NodeType allowed_input_type);
 
   // Get a Float64 representation node whose value is equivalent to the given
   // node.
   //
   // Deopts if the value is not exactly representable as a Float64.
-  ValueNode* GetFloat64(ValueNode* value);
+  ReduceResult GetFloat64(ValueNode* value);
 
-  ValueNode* GetFloat64ForToNumber(ValueNode* value,
-                                   NodeType allowed_input_type);
+  // This does not emit any conversion.
+  ValueNode* TryGetFloat64(ValueNode* value);
 
-  ValueNode* GetHoleyFloat64(ValueNode* value);
+  ReduceResult GetFloat64ForToNumber(ValueNode* value,
+                                     NodeType allowed_input_type);
 
-  ValueNode* GetHoleyFloat64ForToNumber(ValueNode* value,
-                                        NodeType allowed_input_type);
+  // This does not emit any conversion.
+  ValueNode* TryGetFloat64ForToNumber(ValueNode* value,
+                                      NodeType allowed_input_type);
+
+  ReduceResult GetHoleyFloat64(ValueNode* value);
+
+  ReduceResult GetHoleyFloat64ForToNumber(ValueNode* value,
+                                          NodeType allowed_input_type);
 
   void EnsureInt32(ValueNode* value, bool can_be_heap_number = false);
 
@@ -533,6 +557,8 @@ class MaglevReducer {
 
   MaybeReduceResult TryFoldFloat64Min(ValueNode* left, ValueNode* right);
   MaybeReduceResult TryFoldFloat64Max(ValueNode* left, ValueNode* right);
+
+  MaybeReduceResult TryFoldLogicalNot(ValueNode* input);
 
   bool CheckType(ValueNode* node, NodeType type, NodeType* old = nullptr) {
     return known_node_aspects().CheckType(broker(), node, type, old);

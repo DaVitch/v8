@@ -96,14 +96,16 @@ class NodeInfo {
     ValueNode* get(UseRepresentation repr) {
       switch (repr) {
         case UseRepresentation::kTagged:
+        case UseRepresentation::kTaggedForNumberToString:
           return tagged();
         case UseRepresentation::kInt32:
           return int32();
         case UseRepresentation::kTruncatedInt32:
           return truncated_int32_to_number();
         case UseRepresentation::kFloat64:
-        case UseRepresentation::kHoleyFloat64:
           return float64();
+        case UseRepresentation::kHoleyFloat64:
+          return holey_float64();
         case UseRepresentation::kShiftedInt53:
         case UseRepresentation::kUint32:
           UNREACHABLE();
@@ -329,6 +331,13 @@ class KnownNodeAspects {
     auto res = &node_infos_.emplace(node, NodeInfo()).first->second;
     res->IntersectType(node->GetStaticType(broker));
     return res;
+  }
+
+  ValueNode* TryGetAlternativeFor(ValueNode* node, UseRepresentation repr) {
+    node = node->Unwrap();
+    auto info_it = FindInfo(node);
+    if (!IsValid(info_it)) return nullptr;
+    return info_it->second.alternative().get(repr);
   }
 
   std::optional<PossibleMaps> TryGetPossibleMaps(ValueNode* node) {

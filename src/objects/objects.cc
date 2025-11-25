@@ -1519,7 +1519,6 @@ MaybeHandle<JSAny> Object::GetPropertyWithAccessor(LookupIterator* it) {
   DCHECK(!IsForeign(*structure));
 
   // API style callbacks.
-  DirectHandle<JSObject> holder = it->GetHolder<JSObject>();
   if (IsAccessorInfo(*structure)) {
     DirectHandle<Name> name = it->GetName();
     auto info = Cast<AccessorInfo>(structure);
@@ -1533,14 +1532,14 @@ MaybeHandle<JSAny> Object::GetPropertyWithAccessor(LookupIterator* it) {
                                  Object::ConvertReceiver(isolate, receiver));
     }
 
-    PropertyCallbackArguments args(isolate, info->data(), *receiver, *holder,
+    PropertyCallbackArguments args(isolate, *receiver, it->GetHolderForApi(),
                                    Just(kDontThrow));
-    DirectHandle<JSAny> result = args.CallAccessorGetter(info, name);
+    DirectHandle<JSAny> result = args.CallAccessorGetter(isolate, info, name);
     RETURN_EXCEPTION_IF_EXCEPTION(isolate);
     Handle<JSAny> reboxed_result(*result, isolate);
     if (info->replace_on_access() && IsJSReceiver(*receiver)) {
       RETURN_ON_EXCEPTION(isolate, Accessors::ReplaceAccessorWithDataProperty(
-                                       isolate, holder, name, result));
+                                       isolate, args.holder(), name, result));
     }
     return reboxed_result;
   }
@@ -1554,6 +1553,7 @@ MaybeHandle<JSAny> Object::GetPropertyWithAccessor(LookupIterator* it) {
   // Regular accessor.
   DirectHandle<Object> getter(accessor_pair->getter(), isolate);
   if (IsFunctionTemplateInfo(*getter)) {
+    DirectHandle<JSObject> holder = it->GetHolder<JSObject>();
     SaveAndSwitchContext save(isolate, holder->GetCreationContext().value());
     return Cast<JSAny>(Builtins::InvokeApiFunction(
         isolate, false, Cast<FunctionTemplateInfo>(getter), receiver, {},
@@ -1567,9 +1567,9 @@ MaybeHandle<JSAny> Object::GetPropertyWithAccessor(LookupIterator* it) {
   return isolate->factory()->undefined_value();
 }
 
-Maybe<bool> Object::SetPropertyWithAccessor(
-    LookupIterator* it, DirectHandle<Object> value,
-    Maybe<ShouldThrow> maybe_should_throw) {
+Maybe<bool> Object::SetPropertyWithAccessor(LookupIterator* it,
+                                            DirectHandle<Object> value,
+                                            Maybe<ShouldThrow> should_throw) {
   Isolate* isolate = it->isolate();
   DirectHandle<Object> structure = it->GetAccessors();
   DirectHandle<JSAny> receiver = it->GetReceiver();
@@ -1585,7 +1585,6 @@ Maybe<bool> Object::SetPropertyWithAccessor(
   DCHECK(!IsForeign(*structure));
 
   // API style callbacks.
-  DirectHandle<JSObject> holder = it->GetHolder<JSObject>();
   if (IsAccessorInfo(*structure)) {
     DirectHandle<Name> name = it->GetName();
     auto info = Cast<AccessorInfo>(structure);
@@ -1602,14 +1601,17 @@ Maybe<bool> Object::SetPropertyWithAccessor(
                                  Object::ConvertReceiver(isolate, receiver));
     }
 
-    PropertyCallbackArguments args(isolate, info->data(), *receiver, *holder,
-                                   maybe_should_throw);
-    bool result = args.CallAccessorSetter(info, name, value);
+    PropertyCallbackArguments args(isolate, *receiver, it->GetHolderForApi(),
+                                   should_throw);
+    bool result = args.CallAccessorSetter(isolate, info, name, value);
     RETURN_VALUE_IF_EXCEPTION(isolate, Nothing<bool>());
-    // Ensure the setter callback respects the "should throw" value - it's
-    // allowed to fail without throwing only in case of kDontThrow.
-    DCHECK_IMPLIES(!result,
-                   GetShouldThrow(isolate, maybe_should_throw) == kDontThrow);
+    if (!result) {
+      // Make sure TypeError is thrown if necessary in case the callback
+      // failed to set the property.
+      RETURN_FAILURE(isolate, GetShouldThrow(isolate, should_throw),
+                     NewTypeError(MessageTemplate::kStrictCannotSetProperty,
+                                  it->GetName(), receiver));
+    }
     return Just(result);
   }
 
@@ -1617,6 +1619,7 @@ Maybe<bool> Object::SetPropertyWithAccessor(
   DirectHandle<Object> setter(Cast<AccessorPair>(*structure)->setter(),
                               isolate);
   if (IsFunctionTemplateInfo(*setter)) {
+    DirectHandle<JSObject> holder = it->GetHolder<JSObject>();
     SaveAndSwitchContext save(isolate, holder->GetCreationContext().value());
     DirectHandle<Object> args[] = {value};
     RETURN_ON_EXCEPTION_VALUE(
@@ -1629,10 +1632,10 @@ Maybe<bool> Object::SetPropertyWithAccessor(
   } else if (IsCallable(*setter)) {
     // TODO(rossberg): nicer would be to cast to some JSCallable here...
     return SetPropertyWithDefinedSetter(receiver, Cast<JSReceiver>(setter),
-                                        value, maybe_should_throw);
+                                        value, should_throw);
   }
 
-  RETURN_FAILURE(isolate, GetShouldThrow(isolate, maybe_should_throw),
+  RETURN_FAILURE(isolate, GetShouldThrow(isolate, should_throw),
                  NewTypeError(MessageTemplate::kNoSetterInCallback,
                               it->GetName(), it->GetHolder<JSObject>()));
 }
@@ -2323,8 +2326,15 @@ Maybe<bool> Object::SetPropertyInternal(LookupIterator* it,
             return Nothing<bool>();
           }
           switch (result) {
-            case InterceptorResult::kFalse:
-              return Just(false);
+            case InterceptorResult::kFalse: {
+              // Throw TypeError if necessary in case the callback failed
+              // to set the property.
+              Isolate* isolate = it->isolate();
+              RETURN_FAILURE(
+                  isolate, GetShouldThrow(isolate, should_throw),
+                  NewTypeError(MessageTemplate::kStrictCannotSetProperty,
+                               it->GetName(), it->GetReceiver()));
+            }
             case InterceptorResult::kTrue:
               return Just(true);
             case InterceptorResult::kNotIntercepted:
@@ -2585,7 +2595,6 @@ Maybe<bool> Object::SetSuperProperty(LookupIterator* it,
 Maybe<bool> Object::CannotCreateProperty(Isolate* isolate,
                                          DirectHandle<JSAny> receiver,
                                          DirectHandle<Object> name,
-                                         DirectHandle<Object> value,
                                          Maybe<ShouldThrow> should_throw) {
   RETURN_FAILURE(
       isolate, GetShouldThrow(isolate, should_throw),
@@ -2697,7 +2706,7 @@ Maybe<bool> Object::AddDataProperty(LookupIterator* it,
                                     EnforceDefineSemantics semantics) {
   if (!IsJSReceiver(*it->GetReceiver())) {
     return CannotCreateProperty(it->isolate(), it->GetReceiver(), it->GetName(),
-                                value, should_throw);
+                                should_throw);
   }
 
   // Private symbols should be installed on JSProxy using
@@ -3336,7 +3345,7 @@ Maybe<bool> JSArray::ArraySetLength(Isolate* isolate, DirectHandle<JSArray> a,
   if (!result) {
     RETURN_FAILURE(
         isolate, GetShouldThrow(isolate, should_throw),
-        NewTypeError(MessageTemplate::kStrictDeleteProperty,
+        NewTypeError(MessageTemplate::kStrictCannotDeleteProperty,
                      isolate->factory()->NewNumberFromUint(actual_new_len - 1),
                      a));
   }
@@ -4146,18 +4155,20 @@ void Relocatable::Iterate(RootVisitor* v, Relocatable* top) {
   }
 }
 
+START_PROHIBIT_SIGN_CONVERSION()
+
 namespace {
 
 template <typename sinkchar>
 void WriteChunkListToFlat(Tagged<FixedArray> chunk_list_head,
-                          int last_chunk_length, Tagged<String> separator,
-                          sinkchar* sink, int sink_length) {
+                          uint32_t last_chunk_length, Tagged<String> separator,
+                          sinkchar* sink, uint32_t sink_length) {
   DisallowGarbageCollection no_gc;
 #ifdef DEBUG
   sinkchar* sink_end = sink + sink_length;
 #endif
 
-  const int separator_length = separator->length();
+  const uint32_t separator_length = separator->length();
   const bool use_one_byte_separator_fast_path =
       separator_length == 1 && sizeof(sinkchar) == 1 &&
       StringShape(separator).IsSequentialOneByte();
@@ -4179,11 +4190,11 @@ void WriteChunkListToFlat(Tagged<FixedArray> chunk_list_head,
   while (true) {
     Tagged<Object> maybe_next_chunk = chunk->get(0);
     bool is_last_chunk = IsUndefined(maybe_next_chunk);
-    int length = is_last_chunk ? last_chunk_length : chunk->length();
+    uint32_t length = is_last_chunk ? last_chunk_length : chunk->ulength();
     CHECK_GT(length, 0);
     CHECK_LE(length, chunk->length());
 
-    for (int i = 1; i < length; i++) {
+    for (uint32_t i = 1; i < length; i++) {
       Tagged<Object> element = chunk->get(i);
       const bool element_is_special = IsSmi(element);
 
@@ -4194,7 +4205,7 @@ void WriteChunkListToFlat(Tagged<FixedArray> chunk_list_head,
         int count;
         CHECK(Object::ToInt32(element, &count));
         if (count > 0) {
-          num_separators = count;
+          num_separators = static_cast<uint32_t>(count);
           //  Verify that Smis (number of separators) only occur when necessary:
           //    1) at the beginning
           //    2) at the end
@@ -4204,11 +4215,11 @@ void WriteChunkListToFlat(Tagged<FixedArray> chunk_list_head,
           //        so there is no need for a Smi.
           DCHECK(i == 1 || i == length - 1 || num_separators > 1);
         } else {
-          repeat_last = -count;
+          repeat_last = static_cast<uint32_t>(-count);
           // Repeat is only possible when the previous element is not special.
           DCHECK_GE(i, 1);
           DCHECK(IsString(last_element));
-          DCHECK_IMPLIES(i == 1, prev_chunk->get(prev_chunk->length() - 1) ==
+          DCHECK_IMPLIES(i == 1, prev_chunk->get(prev_chunk->ulength() - 1) ==
                                      last_element);
           DCHECK_IMPLIES(i > 1, chunk->get(i - 1) == last_element);
         }
@@ -4238,23 +4249,23 @@ void WriteChunkListToFlat(Tagged<FixedArray> chunk_list_head,
       // Repeat the last written string |repeat_last| times (including
       // separators).
       if (V8_UNLIKELY(repeat_last > 0)) {
-        int string_length = Cast<String>(last_element)->length();
+        uint32_t string_length = Cast<String>(last_element)->length();
         // The implemented logic requires that string length is > 0. Empty
         // strings are handled by repeating the separator (positive smi in the
         // fixed array) already.
         DCHECK_GT(string_length, 0);
-        int length_with_sep = string_length + separator_length;
+        uint32_t length_with_sep = string_length + separator_length;
         // Only copy separators between elements, not at the start or beginning.
         sinkchar* copy_end =
             sink + (length_with_sep * repeat_last) - separator_length;
-        int copy_length = length_with_sep;
+        uint32_t copy_length = length_with_sep;
         while (sink < copy_end - copy_length) {
           DCHECK_LE(sink + copy_length, sink_end);
           memcpy(sink, sink - copy_length, copy_length * sizeof(sinkchar));
           sink += copy_length;
           copy_length *= 2;
         }
-        int remaining = static_cast<int>(copy_end - sink);
+        uint32_t remaining = static_cast<uint32_t>(copy_end - sink);
         if (remaining > 0) {
           DCHECK_LE(sink + remaining, sink_end);
           memcpy(sink, sink - remaining - separator_length,
@@ -4268,7 +4279,7 @@ void WriteChunkListToFlat(Tagged<FixedArray> chunk_list_head,
       if (V8_LIKELY(!element_is_special)) {
         DCHECK(IsString(element));
         Tagged<String> string = Cast<String>(element);
-        const int string_length = string->length();
+        const uint32_t string_length = string->length();
 
         DCHECK(string_length == 0 || sink < sink_end);
         String::WriteToFlat(string, sink, 0, string_length);
@@ -4294,11 +4305,9 @@ void WriteChunkListToFlat(Tagged<FixedArray> chunk_list_head,
 }  // namespace
 
 // static
-Address JSArray::ArrayJoinConcatToSequentialString(Isolate* isolate,
-                                                   Address raw_chunk_list_head,
-                                                   intptr_t last_chunk_length,
-                                                   Address raw_separator,
-                                                   Address raw_dest) {
+Address JSArray::ArrayJoinConcatToSequentialString(
+    Isolate* isolate, Address raw_chunk_list_head,
+    uintptr_t raw_last_chunk_length, Address raw_separator, Address raw_dest) {
   DisallowGarbageCollection no_gc;
   DisallowJavascriptExecution no_js(isolate);
   Tagged<FixedArray> chunk_list_head =
@@ -4309,18 +4318,21 @@ Address JSArray::ArrayJoinConcatToSequentialString(Isolate* isolate,
   DCHECK(StringShape(dest).IsSequentialOneByte() ||
          StringShape(dest).IsSequentialTwoByte());
 
+  uint32_t last_chunk_length = static_cast<uint32_t>(raw_last_chunk_length);
   if (StringShape(dest).IsSequentialOneByte()) {
-    WriteChunkListToFlat(
-        chunk_list_head, static_cast<int>(last_chunk_length), separator,
-        Cast<SeqOneByteString>(dest)->GetChars(no_gc), dest->length());
+    WriteChunkListToFlat(chunk_list_head, last_chunk_length, separator,
+                         Cast<SeqOneByteString>(dest)->GetChars(no_gc),
+                         dest->length());
   } else {
     DCHECK(StringShape(dest).IsSequentialTwoByte());
-    WriteChunkListToFlat(
-        chunk_list_head, static_cast<int>(last_chunk_length), separator,
-        Cast<SeqTwoByteString>(dest)->GetChars(no_gc), dest->length());
+    WriteChunkListToFlat(chunk_list_head, last_chunk_length, separator,
+                         Cast<SeqTwoByteString>(dest)->GetChars(no_gc),
+                         dest->length());
   }
   return dest.ptr();
 }
+
+END_PROHIBIT_SIGN_CONVERSION()
 
 void Oddball::Initialize(Isolate* isolate, DirectHandle<Oddball> oddball,
                          const char* to_string, DirectHandle<Number> to_number,

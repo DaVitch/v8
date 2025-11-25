@@ -3385,10 +3385,8 @@ void Builtins::Generate_CallApiCallbackImpl(MacroAssembler* masm,
 
   FrameScope frame_scope(masm, StackFrame::MANUAL);
   if (mode == CallApiCallbackMode::kGeneric) {
-    __ Ld(
-        api_function_address,
-        FieldMemOperand(func_templ,
-                        FunctionTemplateInfo::kMaybeRedirectedCallbackOffset));
+    __ Ld(api_function_address,
+          FieldMemOperand(func_templ, FunctionTemplateInfo::kCallbackOffset));
   }
 
   __ EnterExitFrame(scratch, FC::getExtraSlotsCountFrom<ExitFrameConstants>(),
@@ -3464,9 +3462,9 @@ void Builtins::Generate_CallApiGetter(MacroAssembler* masm) {
   static_assert(PCA::kShouldThrowOnErrorIndex == 1);
   static_assert(PCA::kHolderIndex == 2);
   static_assert(PCA::kIsolateIndex == 3);
-  static_assert(PCA::kHolderV2Index == 4);
+  static_assert(PCA::kUnusedIndex == 4);
   static_assert(PCA::kReturnValueIndex == 5);
-  static_assert(PCA::kDataIndex == 6);
+  static_assert(PCA::kCallbackInfoIndex == 6);
   static_assert(PCA::kThisIndex == 7);
   static_assert(PCA::kArgsLength == 8);
 
@@ -3476,17 +3474,16 @@ void Builtins::Generate_CallApiGetter(MacroAssembler* masm) {
   //   sp[1 * kSystemPointerSize]: kShouldThrowOnErrorIndex
   //   sp[2 * kSystemPointerSize]: kHolderIndex
   //   sp[3 * kSystemPointerSize]: kIsolateIndex
-  //   sp[4 * kSystemPointerSize]: kHolderV2Index
+  //   sp[4 * kSystemPointerSize]: kUnusedIndex
   //   sp[5 * kSystemPointerSize]: kReturnValueIndex
-  //   sp[6 * kSystemPointerSize]: kDataIndex
+  //   sp[6 * kSystemPointerSize]: kCallbackInfoIndex
   //   sp[7 * kSystemPointerSize]: kThisIndex / receiver
 
-  __ Ld(scratch, FieldMemOperand(callback, AccessorInfo::kDataOffset));
   __ LoadRoot(undef, RootIndex::kUndefinedValue);
   __ li(scratch2, ER::isolate_address());
   Register holderV2 = zero_reg;
-  __ Push(receiver, scratch,  // kThisIndex, kDataIndex
-          undef, holderV2);   // kReturnValueIndex, kHolderV2Index
+  __ Push(receiver, callback,  // kThisIndex, kCallbackInfoIndex
+          undef, holderV2);    // kReturnValueIndex, kUnusedIndex
   __ Push(scratch2, holder);  // kIsolateIndex, kHolderIndex
 
   // |name_arg| clashes with |holder|, so we need to push holder first.
@@ -3499,7 +3496,7 @@ void Builtins::Generate_CallApiGetter(MacroAssembler* masm) {
 
   __ RecordComment("Load api_function_address");
   __ Ld(api_function_address,
-        FieldMemOperand(callback, AccessorInfo::kMaybeRedirectedGetterOffset));
+        FieldMemOperand(callback, AccessorInfo::kGetterOffset));
 
   FrameScope frame_scope(masm, StackFrame::MANUAL);
   __ EnterExitFrame(scratch, FC::getExtraSlotsCountFrom<ExitFrameConstants>(),

@@ -946,9 +946,32 @@ void AccessorAssembler::HandleLoadICSmiHandlerLoadNamedCase(
   BIND(&interceptor);
   {
     Comment("load_interceptor");
+    TNode<InterceptorInfo> interceptor_info =
+        CAST(LoadHandlerDataField(CAST(handler), 2));
+
+    TNode<JSReceiver> receiver = ConvertReceiver(p->context(), p->receiver());
+
+    // Handlers for interceptors are always complex even when holder is a
+    // lookup start object because we are interested in caching interceptor
+    // info in the data handler.
+    TNode<Object> the_holder = Select<Object>(
+        IsNull(holder),
+        [&]() -> TNode<Object> {
+          if (ic_mode == ICMode::kGlobalIC) {
+            // In case of LoadGlobalIC the lookup start object is JSGlobalObject
+            // and receiver is JSGlobalProxy, so instead of loading the global
+            // proxy from the former we just use the latter.
+            CSA_DCHECK(this, IsJSGlobalProxy(CAST(p->receiver())));
+            return p->receiver();
+          } else {
+            return p->lookup_start_object();
+          }
+        },
+        [&] { return holder; });
+
     exit_point->ReturnCallRuntime(Runtime::kLoadPropertyWithInterceptor,
-                                  p->context(), p->name(), p->receiver(),
-                                  holder, p->slot(), p->vector());
+                                  p->context(), p->name(), receiver, the_holder,
+                                  interceptor_info, p->slot(), p->vector());
   }
   BIND(&slow);
   {
@@ -1400,7 +1423,7 @@ void AccessorAssembler::HandleStoreICHandlerCase(
     TNode<Object> holder = p->receiver();
     TNode<Int32T> handler_word = SmiToInt32(CAST(handler));
 
-    Label if_fast_smi(this), if_proxy(this), if_interceptor(this);
+    Label if_fast_smi(this), if_proxy(this);
 
 #define ASSERT_CONSECUTIVE(a, b)                                    \
   static_assert(static_cast<intptr_t>(StoreHandler::Kind::a) + 1 == \
@@ -1417,8 +1440,6 @@ void AccessorAssembler::HandleStoreICHandlerCase(
         DecodeWord32<StoreHandler::KindBits>(handler_word);
     GotoIf(Int32LessThan(handler_kind, STORE_KIND(kGlobalProxy)), &if_fast_smi);
     GotoIf(Word32Equal(handler_kind, STORE_KIND(kProxy)), &if_proxy);
-    GotoIf(Word32Equal(handler_kind, STORE_KIND(kInterceptor)),
-           &if_interceptor);
     GotoIf(Word32Equal(handler_kind, STORE_KIND(kSlow)), &if_slow);
     GotoIf(Word32Equal(handler_kind, STORE_KIND(kGeneric)), &if_generic);
     CSA_DCHECK(this, Word32Equal(handler_kind, STORE_KIND(kNormal)));
@@ -1484,13 +1505,6 @@ void AccessorAssembler::HandleStoreICHandlerCase(
     {
       CSA_DCHECK(this, BoolConstant(!p->IsDefineKeyedOwn()));
       HandleStoreToProxy(p, CAST(holder), miss, support_elements);
-    }
-
-    BIND(&if_interceptor);
-    {
-      Comment("store_interceptor");
-      TailCallRuntime(Runtime::kStorePropertyWithInterceptor, p->context(),
-                      p->value(), p->receiver(), p->name());
     }
 
     BIND(&if_slow);
@@ -2026,7 +2040,7 @@ void AccessorAssembler::HandleStoreICProtoHandler(
 
   {
     Label if_add_normal(this), if_store_global_proxy(this), if_api_setter(this),
-        if_accessor(this), if_native_data_property(this);
+        if_accessor(this), if_native_data_property(this), if_interceptor(this);
 
     CSA_DCHECK(this, TaggedIsSmi(smi_handler));
     TNode<Int32T> handler_word = SmiToInt32(CAST(smi_handler));
@@ -2052,8 +2066,29 @@ void AccessorAssembler::HandleStoreICProtoHandler(
 
     GotoIf(Word32Equal(handler_kind, STORE_KIND(kApiSetter)), &if_api_setter);
 
+    GotoIf(Word32Equal(handler_kind, STORE_KIND(kInterceptor)),
+           &if_interceptor);
+
     CSA_DCHECK(this, Word32Equal(handler_kind, STORE_KIND(kProxy)));
     HandleStoreToProxy(p, CAST(holder), miss, support_elements);
+
+    BIND(&if_interceptor);
+    {
+      Comment("store_interceptor");
+      TNode<JSObject> receiver = CAST(p->receiver());
+      if (ic_mode == ICMode::kGlobalIC) {
+        CSA_DCHECK(this, IsJSGlobalProxy(receiver));
+      }
+
+      // Handlers for interceptors are always complex even when holder is a
+      // lookup start object because we are interested in caching interceptor
+      // info in the data handler.
+      TNode<InterceptorInfo> interceptor_info =
+          CAST(LoadHandlerDataField(handler, 2));
+
+      TailCallRuntime(Runtime::kStorePropertyWithInterceptor, p->context(),
+                      p->value(), receiver, p->name(), interceptor_info);
+    }
 
     BIND(&if_add_normal);
     {

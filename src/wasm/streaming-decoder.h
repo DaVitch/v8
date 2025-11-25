@@ -28,6 +28,12 @@ class NativeModule;
 class V8_EXPORT_PRIVATE StreamingProcessor {
  public:
   virtual ~StreamingProcessor() = default;
+
+  // Initialize anything isolate-specific in this processor. This can happen
+  // late (after passing in bytes already), but must happen before calling
+  // `Finish`.
+  virtual void InitializeIsolateSpecificInfo(Isolate*) = 0;
+
   // Process the first 8 bytes of a WebAssembly module. Returns true if the
   // processing finished successfully and the decoding should continue.
   virtual bool ProcessModuleHeader(base::Vector<const uint8_t> bytes) = 0;
@@ -42,8 +48,8 @@ class V8_EXPORT_PRIVATE StreamingProcessor {
   // finished successfully and the decoding should continue.
   virtual bool ProcessCodeSectionHeader(int num_functions, uint32_t offset,
                                         std::shared_ptr<WireBytesStorage>,
-                                        int code_section_start,
-                                        int code_section_length) = 0;
+                                        size_t code_section_start,
+                                        size_t code_section_length) = 0;
 
   // Process a function body. Returns true if the processing finished
   // successfully and the decoding should continue.
@@ -70,6 +76,10 @@ class V8_EXPORT_PRIVATE StreamingProcessor {
 class V8_EXPORT_PRIVATE StreamingDecoder {
  public:
   virtual ~StreamingDecoder() = default;
+
+  // Initialize anything isolate-specific in this decoder. This can happen late
+  // (after passing in bytes already), but must happen before calling `Finish`.
+  virtual void InitializeIsolateSpecificInfo(Isolate*) = 0;
 
   // The buffer passed into OnBytesReceived is owned by the caller.
   virtual void OnBytesReceived(base::Vector<const uint8_t> bytes) = 0;
@@ -111,8 +121,7 @@ class V8_EXPORT_PRIVATE StreamingDecoder {
       std::unique_ptr<StreamingProcessor> processor);
 
   static std::unique_ptr<StreamingDecoder> CreateSyncStreamingDecoder(
-      Isolate* isolate, WasmEnabledFeatures enabled,
-      CompileTimeImports compile_imports, DirectHandle<Context> context,
+      WasmEnabledFeatures enabled, CompileTimeImports compile_imports,
       const char* api_method_name_for_errors,
       std::shared_ptr<CompilationResultResolver> resolver);
 

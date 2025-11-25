@@ -422,8 +422,8 @@ class Heap final {
   static size_t DefaultMinSemiSpaceSize();
   V8_EXPORT_PRIVATE static size_t DefaultMaxSemiSpaceSize(
       uint64_t physical_memory);
-  // Young generation size is the same for compressed heaps and 32-bit heaps.
-  static size_t OldGenerationToSemiSpaceRatio(uint64_t physical_memory);
+
+  static size_t HeapSizeToSemiSpaceRatio(uint64_t physical_memory);
 
   V8_EXPORT_PRIVATE static size_t DefaultMinHeapSize(uint64_t physical_memory);
   V8_EXPORT_PRIVATE static size_t DefaultMaxHeapSize(uint64_t physical_memory);
@@ -756,9 +756,6 @@ class Heap final {
   V8_EXPORT_PRIVATE uint64_t external_memory_soft_limit();
   uint64_t UpdateExternalMemory(int64_t delta);
 
-  V8_EXPORT_PRIVATE size_t YoungArrayBufferBytes();
-  V8_EXPORT_PRIVATE size_t OldArrayBufferBytes();
-
   uint64_t backing_store_bytes() const {
     return backing_store_bytes_.load(std::memory_order_relaxed);
   }
@@ -953,7 +950,7 @@ class Heap final {
 
   Sweeper* sweeper() { return sweeper_.get(); }
 
-  ArrayBufferSweeper* array_buffer_sweeper() {
+  ArrayBufferSweeper* array_buffer_sweeper() const {
     return array_buffer_sweeper_.get();
   }
 
@@ -1298,9 +1295,6 @@ class Heap final {
   // data and clearing the resource pointer.
   inline void FinalizeExternalString(Tagged<String> string);
 
-  static Tagged<String> UpdateYoungReferenceInExternalStringTableEntry(
-      Heap* heap, FullObjectSlot pointer);
-
   // ===========================================================================
   // Methods checking/returning the space of a given object/address. ===========
   // ===========================================================================
@@ -1401,8 +1395,8 @@ class Heap final {
       size_t* old_generation_size);
   V8_EXPORT_PRIVATE static size_t YoungGenerationSizeFromPhysicalMemory(
       uint64_t physical_memory);
-  V8_EXPORT_PRIVATE static size_t YoungGenerationSizeFromOldGenerationSize(
-      uint64_t physical_memory, uint64_t old_generation_size);
+  V8_EXPORT_PRIVATE static size_t YoungGenerationSizeFromHeapSize(
+      uint64_t physical_memory, size_t heap_size);
   V8_EXPORT_PRIVATE static size_t YoungGenerationSizeFromSemiSpaceSize(
       size_t semi_space_size);
   V8_EXPORT_PRIVATE static size_t SemiSpaceSizeFromYoungGenerationSize(
@@ -1796,6 +1790,8 @@ class Heap final {
   // Returns the amount of external memory registered since last global gc.
   V8_EXPORT_PRIVATE uint64_t AllocatedExternalMemorySinceMarkCompact() const;
 
+  size_t YoungAllocatedExternalBackingStoreBytes() const;
+
   std::shared_ptr<v8::TaskRunner> GetForegroundTaskRunner(
       TaskPriority priority = TaskPriority::kUserBlocking) const;
 
@@ -1838,34 +1834,23 @@ class Heap final {
     inline void AddString(Tagged<String> string);
     bool Contains(Tagged<String> string);
 
-    void IterateAll(RootVisitor* v);
-    void IterateYoung(RootVisitor* v);
-    void PromoteYoung();
+    void Iterate(RootVisitor* v);
 
     // Restores internal invariant and gets rid of collected strings. Must be
     // called after each Iterate*() that modified the strings.
-    void CleanUpAll();
-    void CleanUpYoung();
+    void CleanUp();
 
     // Finalize all registered external strings and clear tables.
     void TearDown();
 
-    void UpdateYoungReferences(
-        Heap::ExternalStringTableUpdaterCallback updater_func);
     void UpdateReferences(
         Heap::ExternalStringTableUpdaterCallback updater_func);
 
-    bool HasYoung() const { return !young_strings_.empty(); }
-
    private:
     void Verify();
-    void VerifyYoung();
 
     Heap* const heap_;
 
-    // To speed up scavenge collections young string are kept separate from old
-    // strings.
-    std::vector<TaggedBase> young_strings_;
     std::vector<TaggedBase> old_strings_;
     // Used to protect access with --shared-string-table.
     base::Mutex mutex_;
@@ -2036,9 +2021,6 @@ class Heap final {
 
   // Performs a minor collection in new generation.
   void Scavenge();
-
-  void UpdateYoungReferencesInExternalStringTable(
-      ExternalStringTableUpdaterCallback updater_func);
 
   void UpdateReferencesInExternalStringTable(
       ExternalStringTableUpdaterCallback updater_func);

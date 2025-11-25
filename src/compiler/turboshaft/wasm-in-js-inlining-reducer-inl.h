@@ -684,15 +684,23 @@ class WasmInJsInliningInterface {
 
   void ResumeHandler(FullDecoder* decoder,
                      base::Vector<const wasm::HandlerCase> handlers,
-                     int handler_index, Value* cont_val) {
+                     size_t handler_index, Value* cont_val, Value* tag_params) {
     Bailout(decoder);
   }
 
   void ResumeThrow(FullDecoder* decoder,
                    const wasm::ContIndexImmediate& cont_imm,
                    const TagIndexImmediate& exc_imm,
-                   base::Vector<wasm::HandlerCase> handlers, const Value args[],
-                   const Value returns[]) {
+                   base::Vector<wasm::HandlerCase> handlers, const Value& cont,
+                   const Value args[], const Value returns[]) {
+    Bailout(decoder);
+  }
+
+  void ResumeThrowRef(FullDecoder* decoder,
+                      const wasm::ContIndexImmediate& cont_imm,
+                      base::Vector<wasm::HandlerCase> handlers,
+                      const Value& cont, const Value& exn,
+                      const Value returns[]) {
     Bailout(decoder);
   }
 
@@ -1289,7 +1297,7 @@ V<Any> WasmInJSInliningReducer<Next>::TryInlineJSWasmCallWrapperAndBody(
   V<turboshaft::FrameState> frame_state =
       CreateJSWasmCallBuiltinContinuationFrameState(js_context,
                                                     outer_frame_state, sig);
-  using GraphBuilder = wasm::WasmWrapperTSGraphBuilder<Assembler<ReducerList>>;
+  using GraphBuilder = wasm::WasmWrapperTSGraphBuilder<assembler_t>;
   std::optional<typename GraphBuilder::InlinedFunctionData>
       inlined_function_data;
   if (v8_flags.turboshaft_wasm_in_js_inlining) {
@@ -1386,7 +1394,7 @@ V<Any> WasmInJSInliningReducer<Next>::TryInlineWasmCall(
   Block* unreachable = __ NewBlock();
   __ Bind(unreachable);
 
-  using Interface = WasmInJsInliningInterface<Assembler<ReducerList>>;
+  using Interface = WasmInJsInliningInterface<assembler_t>;
   using Decoder =
       wasm::WasmFullDecoder<typename Interface::ValidationTag, Interface>;
   Decoder can_inline_decoder(Asm().phase_zone(), env.module,

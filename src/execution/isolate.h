@@ -203,10 +203,6 @@ class WasmCodeLookupCache;
 class WasmOrphanedGlobalHandle;
 }
 
-namespace detail {
-class WaiterQueueNode;
-}  // namespace detail
-
 #define RETURN_FAILURE_IF_EXCEPTION(isolate)         \
   do {                                               \
     Isolate* __isolate__ = (isolate);                \
@@ -559,6 +555,14 @@ __attribute__((tls_model(V8_TLS_MODEL))) extern thread_local Isolate*
 // HiddenFactory exists so Isolate can privately inherit from it without making
 // Factory's members available to Isolate directly.
 class V8_EXPORT_PRIVATE HiddenFactory : private Factory {};
+
+// Make sure Isolate pointer is page aligned. This ensures predictable offsets
+// of isolate fields within CPU cache lines and allows to add payload into
+// isolate pointers.
+constexpr uintptr_t kIsolateAlignment = kMinimumOSPageSize;
+
+// Make sure the Api flags encoded into isolate pointer will not corrupt it.
+static_assert(Internals::kCallbackInfoIsolateFlagsMask < kIsolateAlignment);
 
 class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   // These forward declarations are required to make the friend declarations in
@@ -2393,9 +2397,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
     memory_saver_mode_enabled_ = memory_saver_mode_enabled;
   }
 
-  std::list<std::unique_ptr<detail::WaiterQueueNode>>&
-  async_waiter_queue_nodes();
-
   void ReportExceptionFunctionCallback(
       DirectHandle<JSReceiver> receiver,
       DirectHandle<FunctionTemplateInfo> function,
@@ -2887,10 +2888,6 @@ class V8_EXPORT_PRIVATE Isolate final : private HiddenFactory {
   // table.
   TrustedPointerTable::Space* shared_trusted_pointer_space_ = nullptr;
 #endif  // V8_ENABLE_SANDBOX
-
-  // List to manage the lifetime of the WaiterQueueNodes used to track async
-  // waiters for JSSynchronizationPrimitives.
-  std::list<std::unique_ptr<detail::WaiterQueueNode>> async_waiter_queue_nodes_;
 
   // Used to track and safepoint all client isolates attached to this shared
   // isolate.

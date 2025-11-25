@@ -22,11 +22,18 @@
 
 namespace v8::internal::wasm {
 
-class V8_EXPORT_PRIVATE AsyncStreamingDecoder : public StreamingDecoder {
+class V8_EXPORT_PRIVATE AsyncStreamingDecoder final : public StreamingDecoder {
  public:
   explicit AsyncStreamingDecoder(std::unique_ptr<StreamingProcessor> processor);
   AsyncStreamingDecoder(const AsyncStreamingDecoder&) = delete;
   AsyncStreamingDecoder& operator=(const AsyncStreamingDecoder&) = delete;
+
+  void InitializeIsolateSpecificInfo(Isolate* isolate) override {
+    const bool failed = !ok();
+    StreamingProcessor* processor =
+        failed ? failed_processor_.get() : processor_.get();
+    processor->InitializeIsolateSpecificInfo(isolate);
+  }
 
   void OnBytesReceived(base::Vector<const uint8_t> bytes) override;
 
@@ -70,10 +77,10 @@ class V8_EXPORT_PRIVATE AsyncStreamingDecoder : public StreamingDecoder {
         :  // ID + length + payload
           module_offset_(module_offset),
           bytes_(base::OwnedVector<uint8_t>::NewForOverwrite(
-              1 + length_bytes.length() + payload_length)),
-          payload_offset_(1 + length_bytes.length()) {
+              1 + length_bytes.size() + payload_length)),
+          payload_offset_(1 + length_bytes.size()) {
       bytes_.begin()[0] = id;
-      memcpy(bytes_.begin() + 1, &length_bytes.first(), length_bytes.length());
+      memcpy(bytes_.begin() + 1, &length_bytes.first(), length_bytes.size());
     }
 
     SectionCode section_code() const {
@@ -190,7 +197,7 @@ class V8_EXPORT_PRIVATE AsyncStreamingDecoder : public StreamingDecoder {
 
   void StartCodeSection(int num_functions,
                         std::shared_ptr<WireBytesStorage> wire_bytes_storage,
-                        int code_section_start, int code_section_length) {
+                        size_t code_section_start, size_t code_section_length) {
     if (!ok()) return;
     // The offset passed to {ProcessCodeSectionHeader} is an error offset and
     // not the start offset of a buffer. Therefore we need the -1 here.
@@ -752,12 +759,9 @@ AsyncStreamingDecoder::DecodeNumberOfFunctions::NextWithValue(
   if (payload_buf.size() < bytes_consumed_) return streaming->ToErrorState();
   memcpy(payload_buf.begin(), buffer().begin(), bytes_consumed_);
 
-  DCHECK_GE(kMaxInt, section_buffer_->module_offset() +
-                         section_buffer_->payload_offset());
-  int code_section_start = static_cast<int>(section_buffer_->module_offset() +
-                                            section_buffer_->payload_offset());
-  DCHECK_GE(kMaxInt, payload_buf.length());
-  int code_section_len = static_cast<int>(payload_buf.length());
+  size_t code_section_start =
+      section_buffer_->module_offset() + section_buffer_->payload_offset();
+  size_t code_section_len = payload_buf.size();
   DCHECK_GE(kMaxInt, value_);
   streaming->StartCodeSection(static_cast<int>(value_),
                               streaming->section_buffers_.back(),
