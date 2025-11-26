@@ -2289,6 +2289,25 @@ DEFINE_NEG_IMPLICATION(wasm_code_coverage, wasm_jitless)
 // it introduces.
 DEFINE_IMPLICATION(wasm_code_coverage, wasm_opt)
 
+DEFINE_BOOL(trace_wasm_compilation_hints, false,
+            "trace compilation hints parsing and usage errors")
+DEFINE_BOOL(wasm_generate_compilation_hints, false,
+            "enable emitting compilation-hints sections for Wasm to a file")
+// Feedback collection is guarded by the --wasm-inlining flag.
+DEFINE_IMPLICATION(wasm_generate_compilation_hints, wasm_inlining)
+// Despite functions not being tiered up in this mode, we need this to track
+// which functions were marked for tierup to generate the compilation-priority
+// section.
+DEFINE_IMPLICATION(wasm_generate_compilation_hints, wasm_tier_up)
+DEFINE_BOOL(trace_wasm_generate_compilation_hints, false,
+            "enable tracing wasm compilation hints generation")
+// Feedback collection is guarded by the --wasm-inlining flag.
+DEFINE_IMPLICATION(trace_wasm_generate_compilation_hints, wasm_inlining)
+// Despite functions not being tiered up in this mode, we need this to track
+// which functions were marked for tierup to generate the compilation-priority
+// section.
+DEFINE_IMPLICATION(trace_wasm_generate_compilation_hints, wasm_tier_up)
+
 #endif  // V8_ENABLE_WEBASSEMBLY
 
 DEFINE_INT(stress_sampling_allocation_profiler, 0,
@@ -2610,10 +2629,6 @@ DEFINE_BOOL(
     "reclaim otherwise unreachable unmodified wrapper objects when possible")
 DEFINE_BOOL(parallel_reclaim_unmodified_wrappers, true,
             "reclaim wrapper objects in parallel")
-
-// These flags will be removed after experiments. Do not rely on them.
-DEFINE_BOOL(gc_experiment_less_compaction, false,
-            "less compaction in non-memory reducing mode")
 
 DEFINE_INT(gc_memory_reducer_start_delay_ms, 8000,
            "Delay before memory reducer start")

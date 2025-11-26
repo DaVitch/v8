@@ -1057,6 +1057,13 @@ void Symbol::SymbolPrint(std::ostream& os) {
   os << "\n";
 }
 
+void EnumCache::EnumCachePrint(std::ostream& os) {
+  PrintHeader(os, "EnumCache");
+  os << "\n - keys: " << Brief(keys());
+  os << "\n - indices: " << Brief(indices());
+  os << "\n";
+}
+
 void DescriptorArray::DescriptorArrayPrint(std::ostream& os) {
   PrintHeader(os, "DescriptorArray");
   os << "\n - enum_cache: ";
@@ -1293,6 +1300,15 @@ void AccessorInfo::AccessorInfoPrint(std::ostream& os) {
     os << "\n - setter: " << kUnavailableString;
   }
   os << '\n';
+}
+
+void AccessCheckInfo::AccessCheckInfoPrint(std::ostream& os) {
+  PrintHeader(os, "AccessCheckInfo");
+  os << "\n - callback: " << Brief(callback());
+  os << "\n - named_interceptor: " << Brief(named_interceptor());
+  os << "\n - indexed_interceptor: " << Brief(indexed_interceptor());
+  os << "\n - data: " << Brief(data());
+  os << "\n";
 }
 
 void InterceptorInfo::InterceptorInfoPrint(std::ostream& os) {
@@ -4454,6 +4470,7 @@ void JSObject::PrintTransitions(std::ostream& os) {
 }
 
 #endif  // defined(DEBUG) || defined(OBJECT_PRINT)
+
 }  // namespace v8::internal
 
 namespace {

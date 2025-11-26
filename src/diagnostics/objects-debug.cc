@@ -195,17 +195,6 @@ void TaggedIndex::TaggedIndexVerify(Tagged<TaggedIndex> obj, Isolate* isolate) {
 void HeapObject::HeapObjectVerify(Isolate* isolate) {
   CHECK(IsHeapObject(*this));
 
-  if (SafeIsAnyHole(Tagged(*this))) {
-    ReadOnlyRoots roots(isolate);
-#define COMPARE_ROOTS_VALUE(_, Value, __) \
-  if (*this == roots.Value()) {           \
-    return;                               \
-  }
-    HOLE_LIST(COMPARE_ROOTS_VALUE);
-#undef COMPARE_ROOTS_VALUE
-    UNREACHABLE();
-  }
-
   PtrComprCageBase cage_base(isolate);
   Object::VerifyPointer(isolate, map(cage_base));
   CHECK(IsMap(map(cage_base), cage_base));
@@ -1451,6 +1440,12 @@ bool ShouldVerifySharedFunctionInfoFunctionIndex(
 void SharedFunctionInfo::SharedFunctionInfoVerify(LocalIsolate* isolate) {
   ReadOnlyRoots roots(isolate);
 
+  // As we're iterating the heap, we might see inconsistent (and unreachable)
+  // SFIs that reference unpublished trusted objects. This can for example
+  // happen in case Wasm module instantiation fails, in which case we
+  // "unpublish" the trusted objects as they'd be inconsistent.
+  if (HasUnpublishedTrustedData(isolate)) return;
+
   Tagged<Object> value = name_or_scope_info(kAcquireLoad);
   if (IsScopeInfo(value)) {
     CHECK(!Cast<ScopeInfo>(value)->IsEmpty());
@@ -1978,9 +1973,21 @@ void JSFinalizationRegistry::JSFinalizationRegistryVerify(Isolate* isolate) {
   }
 }
 
+void AccessCheckInfo::AccessCheckInfoVerify(Isolate* isolate) {
+  Object::VerifyPointer(isolate, callback());
+  Object::VerifyPointer(isolate, named_interceptor());
+  Object::VerifyPointer(isolate, indexed_interceptor());
+  Object::VerifyPointer(isolate, data());
+}
+
 void JSWeakMap::JSWeakMapVerify(Isolate* isolate) {
   TorqueGeneratedClassVerifiers::JSWeakMapVerify(*this, isolate);
   CHECK(IsEphemeronHashTable(table()) || IsUndefined(table(), isolate));
+}
+
+void ScriptOrModule::ScriptOrModuleVerify(Isolate* isolate) {
+  Object::VerifyPointer(isolate, resource_name());
+  Object::VerifyPointer(isolate, host_defined_options());
 }
 
 void JSArrayIterator::JSArrayIteratorVerify(Isolate* isolate) {
@@ -2479,11 +2486,13 @@ void PrototypeUsers::Verify(Tagged<WeakArrayList> array) {
 }
 
 void EnumCache::EnumCacheVerify(Isolate* isolate) {
-  TorqueGeneratedClassVerifiers::EnumCacheVerify(*this, isolate);
-  Heap* heap = isolate->heap();
-  if (*this == ReadOnlyRoots(heap).empty_enum_cache()) {
-    CHECK_EQ(ReadOnlyRoots(heap).empty_fixed_array(), keys());
-    CHECK_EQ(ReadOnlyRoots(heap).empty_fixed_array(), indices());
+  Object::VerifyPointer(isolate, keys());
+  Object::VerifyPointer(isolate, indices());
+
+  ReadOnlyRoots roots(isolate);
+  if (this == roots.empty_enum_cache()) {
+    CHECK_EQ(roots.empty_fixed_array(), keys());
+    CHECK_EQ(roots.empty_fixed_array(), indices());
   }
 }
 

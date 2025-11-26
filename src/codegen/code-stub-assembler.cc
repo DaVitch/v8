@@ -13315,6 +13315,34 @@ void CodeStubAssembler::ReportFeedbackUpdate(
 #endif  // V8_TRACE_FEEDBACK_UPDATES
 }
 
+void CodeStubAssembler::UpdateEmbeddedFeedback(
+    TNode<Int32T> feedback, TNode<BytecodeArray> bytecode_array,
+    TNode<IntPtrT> feedback_offset) {
+  Label end(this);
+
+  TNode<Int32T> previous_feedback =
+      Load<Uint16T>(bytecode_array, feedback_offset);
+  TNode<Int32T> combined_feedback = Word32Or(previous_feedback, feedback);
+
+  GotoIf(Word32Equal(previous_feedback, combined_feedback), &end);
+  {
+#ifdef V8_ENABLE_SANDBOX_HARDWARE_SUPPORT
+    // manually ExitSandbox() to modify BytecodeArray
+    ExitSandbox();
+#endif
+
+    StoreNoWriteBarrier(MachineRepresentation::kWord16, bytecode_array,
+                        feedback_offset, combined_feedback);
+
+#ifdef V8_ENABLE_SANDBOX_HARDWARE_SUPPORT
+    EnterSandbox();
+#endif
+    Goto(&end);
+  }
+
+  BIND(&end);
+}
+
 void CodeStubAssembler::OverwriteFeedback(TVariable<Smi>* existing_feedback,
                                           int new_feedback) {
   if (existing_feedback == nullptr) return;
@@ -16775,11 +16803,11 @@ void CodeStubAssembler::ForInPrepare(TNode<HeapObject> enumerator,
     TNode<EnumCache> enum_cache = LoadObjectField<EnumCache>(
         descriptors, DescriptorArray::kEnumCacheOffset);
     TNode<FixedArray> enum_keys =
-        LoadObjectField<FixedArray>(enum_cache, EnumCache::kKeysOffset);
+        LoadObjectField<FixedArray>(enum_cache, offsetof(EnumCache, keys_));
 
     // Check if we have enum indices available.
     TNode<FixedArray> enum_indices =
-        LoadObjectField<FixedArray>(enum_cache, EnumCache::kIndicesOffset);
+        LoadObjectField<FixedArray>(enum_cache, offsetof(EnumCache, indices_));
     TNode<Uint32T> enum_indices_length =
         LoadAndUntagFixedArrayBaseLengthAsUint32(enum_indices);
     TNode<Smi> feedback = SelectSmiConstant(

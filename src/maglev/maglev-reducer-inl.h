@@ -126,27 +126,6 @@ ReduceResult MaglevReducer<BaseT>::AddNewNode(
 
 template <typename BaseT>
 template <typename NodeT, typename... Args>
-NodeT* MaglevReducer<BaseT>::AddNewNodeNoAbort(
-    std::initializer_list<ValueNode*> inputs, Args&&... args) {
-  static_assert(IsFixedInputNode<NodeT>());
-  if constexpr (Node::participate_in_cse(Node::opcode_of<NodeT>) &&
-                ReducerBaseWithKNA<BaseT>) {
-    if (v8_flags.maglev_cse) {
-      ReduceResult result = AddNewNodeOrGetEquivalent<NodeT>(
-          true, inputs, std::forward<Args>(args)...);
-      CHECK(result.IsDoneWithPayload());
-      return result.node()->Cast<NodeT>();
-    }
-  }
-  NodeT* node =
-      NodeBase::New<NodeT>(zone(), inputs.size(), std::forward<Args>(args)...);
-  ReduceResult result = SetNodeInputs(node, inputs);
-  CHECK(result.IsDoneWithoutPayload());
-  return AttachExtraInfoAndAddToGraph(node);
-}
-
-template <typename BaseT>
-template <typename NodeT, typename... Args>
 NodeT* MaglevReducer<BaseT>::AddNewNodeNoInputConversion(
     std::initializer_list<ValueNode*> inputs, Args&&... args) {
   static_assert(IsFixedInputNode<NodeT>());
@@ -592,7 +571,7 @@ ReduceResult MaglevReducer<BaseT>::GetTaggedValue(
     case ValueRepresentation::kHoleyFloat64: {
       if (!IsEmptyNodeType(node_info->type()) && node_info->is_smi()) {
         return alternative.set_tagged(
-            AddNewNodeNoInputConversion<CheckedSmiTagFloat64>({value}));
+            AddNewNodeNoInputConversion<CheckedSmiTagHoleyFloat64>({value}));
       }
       return alternative.set_tagged(
           AddNewNodeNoInputConversion<HoleyFloat64ToTagged>(
@@ -939,7 +918,8 @@ ValueNode* MaglevReducer<BaseT>::GetTruncatedInt32ForToNumber(
     case ValueRepresentation::kTagged: {
       NodeType old_type;
       EnsureType(value, allowed_input_type, &old_type);
-      if (NodeTypeIsSmi(old_type)) {
+      // TODO(428667907): Ideally we should bail out early for the kNone type.
+      if (NodeTypeIsSmi(old_type, NodeTypeIsVariant::kAllowNone)) {
         // Smi untagging can be cached as an int32 alternative, not just a
         // truncated alternative.
         return alternative.set_int32(BuildSmiUntag(value));
@@ -948,7 +928,9 @@ ValueNode* MaglevReducer<BaseT>::GetTruncatedInt32ForToNumber(
         return alternative.set_int32(
             AddNewNodeNoInputConversion<CheckedSmiUntag>({value}));
       }
-      if (NodeTypeIs(old_type, allowed_input_type)) {
+      // TODO(428667907): Ideally we should bail out early for the kNone type.
+      if (NodeTypeIs(old_type, allowed_input_type,
+                     NodeTypeIsVariant::kAllowNone)) {
         return alternative.set_truncated_int32_to_number(
             AddNewNodeNoInputConversion<TruncateUnsafeNumberOrOddballToInt32>(
                 {value}, GetTaggedToFloat64ConversionType(allowed_input_type)));
@@ -1053,16 +1035,18 @@ ReduceResult MaglevReducer<BaseT>::GetFloat64OrHoleyFloat64Impl(
   switch (value->properties().value_representation()) {
     case ValueRepresentation::kTagged: {
       auto combined_type = IntersectType(allowed_input_type, node_info->type());
-      if (!IsEmptyNodeType(node_info->type()) &&
+      if (!IsEmptyNodeType(combined_type) &&
           NodeTypeIs(combined_type, NodeType::kSmi)) {
         // Get the float64 value of a Smi value its int32 representation.
         return GetFloat64OrHoleyFloat64Impl(GetInt32(value), use_rep,
                                             combined_type);
       }
-      if (!IsEmptyNodeType(node_info->type()) &&
+      if (!IsEmptyNodeType(combined_type) &&
           NodeTypeIs(combined_type, NodeType::kNumber)) {
-        ValueNode* float64_value = BuildNumberOrOddballToFloat64OrHoleyFloat64(
-            value, use_rep, NodeType::kNumber);
+        ValueNode* float64_value;
+        GET_VALUE_OR_ABORT(float64_value,
+                           BuildNumberOrOddballToFloat64OrHoleyFloat64(
+                               value, use_rep, NodeType::kNumber));
         if (use_rep == UseRepresentation::kFloat64) {
           // Number->Float64 conversions are exact alternatives, so they can
           // also become the canonical float64_alternative.
@@ -1070,7 +1054,7 @@ ReduceResult MaglevReducer<BaseT>::GetFloat64OrHoleyFloat64Impl(
         }
         return float64_value;
       }
-      if (!IsEmptyNodeType(node_info->type()) &&
+      if (!IsEmptyNodeType(combined_type) &&
           NodeTypeIs(combined_type, NodeType::kNumberOrOddball)) {
         // NumberOrOddball->Float64 conversions are not exact alternatives,
         // since they lose the information that this is an oddball, so they
@@ -1475,14 +1459,14 @@ ValueNode* MaglevReducer<BaseT>::BuildSmiUntag(ValueNode* node) {
         phi->SetUseRequires31BitValue();
       }
     }
-    return AddNewNodeNoAbort<UnsafeSmiUntag>({node});
+    return AddNewNodeNoInputConversion<UnsafeSmiUntag>({node});
   } else {
-    return AddNewNodeNoAbort<CheckedSmiUntag>({node});
+    return AddNewNodeNoInputConversion<CheckedSmiUntag>({node});
   }
 }
 
 template <typename BaseT>
-ValueNode* MaglevReducer<BaseT>::BuildNumberOrOddballToFloat64OrHoleyFloat64(
+ReduceResult MaglevReducer<BaseT>::BuildNumberOrOddballToFloat64OrHoleyFloat64(
     ValueNode* node, UseRepresentation use_rep, NodeType allowed_input_type) {
   DCHECK(use_rep == UseRepresentation::kFloat64 ||
          use_rep == UseRepresentation::kHoleyFloat64);
@@ -1492,35 +1476,38 @@ ValueNode* MaglevReducer<BaseT>::BuildNumberOrOddballToFloat64OrHoleyFloat64(
   if (EnsureType(node, allowed_input_type, &old_type)) {
     if (old_type == NodeType::kSmi) {
       ValueNode* untagged_smi = BuildSmiUntag(node);
-      ValueNode* float64 =
-          AddNewNodeNoAbort<ChangeInt32ToFloat64>({untagged_smi});
+      ValueNode* float64;
+      GET_VALUE_OR_ABORT(float64,
+                         AddNewNode<ChangeInt32ToFloat64>({untagged_smi}));
       if (use_rep == UseRepresentation::kFloat64) return float64;
-      return AddNewNodeNoAbort<UnsafeFloat64ToHoleyFloat64>({float64});
+      return AddNewNode<UnsafeFloat64ToHoleyFloat64>({float64});
     }
     if (conversion_type == TaggedToFloat64ConversionType::kOnlyNumber) {
-      ValueNode* float64 = AddNewNodeNoAbort<UnsafeNumberToFloat64>({node});
+      ValueNode* float64;
+      GET_VALUE_OR_ABORT(float64, AddNewNode<UnsafeNumberToFloat64>({node}));
       if (use_rep == UseRepresentation::kFloat64) return float64;
-      return AddNewNodeNoAbort<ChangeFloat64ToHoleyFloat64>({float64});
+      return AddNewNode<ChangeFloat64ToHoleyFloat64>({float64});
     } else {
       if (use_rep == UseRepresentation::kHoleyFloat64) {
-        return AddNewNodeNoAbort<UnsafeNumberOrOddballToHoleyFloat64>(
-            {node}, conversion_type);
-      }
-      return AddNewNodeNoAbort<UnsafeNumberOrOddballToFloat64>({node},
+        return AddNewNode<UnsafeNumberOrOddballToHoleyFloat64>({node},
                                                                conversion_type);
+      }
+      return AddNewNode<UnsafeNumberOrOddballToFloat64>({node},
+                                                        conversion_type);
     }
   } else {
     if (conversion_type == TaggedToFloat64ConversionType::kOnlyNumber) {
-      ValueNode* float64 = AddNewNodeNoAbort<CheckedNumberToFloat64>({node});
+      ValueNode* float64;
+      GET_VALUE_OR_ABORT(float64, AddNewNode<CheckedNumberToFloat64>({node}));
       if (use_rep == UseRepresentation::kFloat64) return float64;
-      return AddNewNodeNoAbort<ChangeFloat64ToHoleyFloat64>({node});
+      return AddNewNode<ChangeFloat64ToHoleyFloat64>({node});
     } else {
       if (use_rep == UseRepresentation::kHoleyFloat64) {
-        return AddNewNodeNoAbort<CheckedNumberOrOddballToHoleyFloat64>(
+        return AddNewNode<CheckedNumberOrOddballToHoleyFloat64>(
             {node}, conversion_type);
       }
-      return AddNewNodeNoAbort<CheckedNumberOrOddballToFloat64>(
-          {node}, conversion_type);
+      return AddNewNode<CheckedNumberOrOddballToFloat64>({node},
+                                                         conversion_type);
     }
   }
 }

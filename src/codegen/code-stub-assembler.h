@@ -3845,6 +3845,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
                            TNode<HeapObject> maybe_feedback_vector,
                            TNode<UintPtrT> slot_id);
 
+  void UpdateEmbeddedFeedback(TNode<Int32T> feedback,
+                              TNode<BytecodeArray> bytecode_array,
+                              TNode<IntPtrT> feedback_offset);
+
   // Report that there was a feedback update, performing any tasks that should
   // be done after a feedback update.
   void ReportFeedbackUpdate(TNode<FeedbackVector> feedback_vector,
@@ -4460,6 +4464,13 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   void Abort(AbortReason reason) {
     CallRuntime(Runtime::kAbort, NoContextConstant(), SmiConstant(reason));
+    Unreachable();
+  }
+
+  void AbortWithSandboxViolation() {
+    TNode<ExternalReference> abort_with_sandbox_violation =
+        ExternalConstant(ExternalReference::abort_with_sandbox_violation());
+    CallCFunction(abort_with_sandbox_violation, std::nullopt);
     Unreachable();
   }
 
